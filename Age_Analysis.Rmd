@@ -1,0 +1,1560 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Set working directory
+
+```{r}
+setwd("C:/Users/annab/OneDrive - Deakin University/PhD/Studies/FAMe Study/FAMe Data Analysis/R analysis")
+
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(gtsummary)
+library(cardx)
+library(gt)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(mgcv)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(ggbreak)
+library(patchwork)
+library(sandwich)
+library(lmtest)
+library(car)
+
+data <- read_excel("C:/Users/annab/OneDrive - Deakin University/PhD/Studies/FAMe Study/FAMe Data Analysis/R analysis/FAMe_Imputed_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+
+```
+
+# Define list of variables
+
+```{r}
+allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa")
+
+var_labels <-c(
+  bodyfat = expression("Body fat (%)"),
+  ALM = expression("ALM (kg)"),
+  ALMh = expression(bold("ALM index (kg.m"^-2*")")),  
+  thighmuscle = expression(bold("Thigh muscle CSA (cm"^2*")")),
+  intrafat = expression(bold("Intramuscular fat (cm"^2*")")),  
+  subfat = expression(bold("Subcutaneous fat (cm"^2*")")), 
+  permuscle = expression("Thigh muscle (%)"),
+  onerep = expression("e1RM (kg)"),
+  onerepllm = expression(bold("Specific e1RM (kg.kg"^-2*")")),
+  onerepcsa = expression(bold("Specific e1RM (kg.cm"^-2*")"))
+)
+
+```
+
+# Investigating linearity
+
+1. Look at plots to see general trend in data across age
+2. Compare spread of residuals in linear vs. polynomial models
+3. Use GAM model edf value
+4. Use AIC test to compare score between linear and polynomial (lower score = better)
+
+## Visual plots
+
+```{r}
+
+# Linear plots
+
+linear_plot_list <- list()
+
+for (outcome in allvariables) {
+  
+  p <- ggplot(data, aes_string(x = "age", y = outcome)) +
+    geom_point(color = "blue") +
+    geom_smooth(method = "lm") +  # Single smooth line over all data
+    ggtitle(paste(outcome, "vs Age")) +
+    theme_minimal()
+  
+  # Add the plot to the list
+  linear_plot_list[[outcome]] <- p
+}
+
+# Combine all plots into one page using wrap_plots
+combined_plot <- wrap_plots(linear_plot_list, ncol = 3)
+
+pdf_filename <- paste0("Imputed_models/Investigative_plots/Linear/Linear_Plots.pdf")
+ggsave(pdf_filename, combined_plot, width = 15, height = 18)
+
+# Polynomial plots
+
+polynomial_plot_list <- list()
+
+for (outcome in allvariables) {
+  
+  p <- ggplot(data, aes_string(x = "age", y = outcome)) +
+    geom_point(color = "blue") +
+    geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+    ggtitle(paste(outcome, "vs Age")) +
+    theme_minimal()
+  
+  # Add the plot to the list
+  polynomial_plot_list[[outcome]] <- p
+}
+
+# Combine all plots into one page using wrap_plots
+combined_plot <- wrap_plots(polynomial_plot_list, ncol = 3)
+
+pdf_filename <- paste0("Imputed_models/Investigative_plots/Polynomial/Polynomial_Plots.pdf")
+ggsave(pdf_filename, combined_plot, width = 15, height = 18)
+
+# GAM plots
+
+nonlinear_plot_list <- list()
+
+for (outcome in allvariables) {
+  
+  p <- ggplot(data, aes_string(x = "age", y = outcome)) +
+    geom_point(color = "blue") +
+    geom_smooth(method = "gam") +
+    ggtitle(paste(outcome, "vs Age")) +
+    theme_minimal()
+  
+  # Add the plot to the list
+  nonlinear_plot_list[[outcome]] <- p
+}
+
+# Combine all plots into one page using wrap_plots
+combined_plot <- wrap_plots(nonlinear_plot_list, ncol = 3)
+
+pdf_filename <- paste0("Imputed_models/Investigative_plots/GAM/GAM_Plots.pdf")
+ggsave(pdf_filename, combined_plot, width = 15, height = 18)
+```
+
+## Residuals
+
+```{r}
+# Linear Residual plots
+
+# Initialize a list to store the combined plots for each variable
+linear_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a linear model
+  lm_model <- lm(as.formula(paste(outcome, "~ age")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  linear_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/Linear/Linear_Model_Residual_Plots.pdf", width = 8, height = 11)
+
+for (plot in linear_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+# Polynomial residual plots
+
+# Initialize a list to store the combined plots for each variable
+polynomial_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a linear model
+  lm_model <- lm(as.formula(paste(outcome, "~ poly(age, 2)")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  polynomial_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/Polynomial/Polynomial_Model_Residual_Plots.pdf", width = 8, height = 11)
+
+for (plot in polynomial_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+# GAM residual plots
+
+# Initialize a list to store the combined plots for each variable
+gam_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a GAM model
+  gam_model <- gam(as.formula(paste(outcome, "~ s(age)")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(gam_model)
+  fitted <- fitted(gam_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  gam_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/GAM/GAM_Model_Residual_Plots.pdf", width = 8, height = 11)
+
+for (plot in gam_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+```
+
+## AIC
+
+### Unadjusted
+
+```{r}
+# Testing the fit of models with AIC
+aic_results <- data.frame(
+  Variable = character(),
+  Linear_AIC = numeric(),
+  Polynomial_AIC = numeric(),
+  GAM_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  linear_formula <- as.formula(paste(outcome, "~ age"))
+  polynomial_formula <- as.formula(paste(outcome, "~ poly(age, 2)"))
+  GAM_formula <- as.formula(paste(outcome, "~ s(age)"))
+  
+  # Fit linear model
+  lm_linear <- lm(linear_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  lm_poly <- lm(polynomial_formula, data = data)
+  
+  # Fit GAM model
+  gam_GAM <- gam(GAM_formula, data = data)
+  
+  # Extract AICs
+  aic_linear <- AIC(lm_linear)
+  aic_poly <- AIC(lm_poly)
+  aic_GAM <- AIC(gam_GAM)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, Linear_AIC = aic_linear, Polynomial_AIC = aic_poly, GAM_AIC = aic_GAM)
+  )
+}
+
+# Create the directory if it doesn't exist
+if(!dir.exists("Investigative_plots")) dir.create("Investigative_plots")
+
+# Write the results to a CSV file
+write.csv(aic_results, "Imputed_models/Investigative_plots/Model_type/Unadjusted_Linear_Poly_GAM_Model_fit.csv", row.names = FALSE)
+
+```
+
+### Adjusted
+
+```{r}
+# Testing the fit of models with AIC
+aic_results <- data.frame(
+  Variable = character(),
+  Linear_AIC = numeric(),
+  Polynomial_AIC = numeric(),
+  GAM_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  linear_formula <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  polynomial_formula <- as.formula(paste(outcome, "~ poly(age, 2) + mvpa + protein"))
+  GAM_formula <- as.formula(paste(outcome, "~ s(age) + mvpa + protein"))
+  
+  # Fit linear model
+  lm_linear <- lm(linear_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  lm_poly <- lm(polynomial_formula, data = data)
+  
+  # Fit GAM model
+  gam_GAM <- gam(GAM_formula, data = data)
+  
+  # Extract AICs
+  aic_linear <- AIC(lm_linear)
+  aic_poly <- AIC(lm_poly)
+  aic_GAM <- AIC(gam_GAM)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, Linear_AIC = aic_linear, Polynomial_AIC = aic_poly, GAM_AIC = aic_GAM)
+  )
+}
+
+# Create the directory if it doesn't exist
+if(!dir.exists("Investigative_plots")) dir.create("Investigative_plots")
+
+# Write the results to a CSV file
+write.csv(aic_results, "Imputed_models/Investigative_plots/Model_type/Adjusted_Linear_Poly_GAM_Model_fit.csv", row.names = FALSE)
+
+```
+
+
+# Testing fit of covariates
+
+## Linear models
+
+```{r}
+# Initialize a list to store the combined plots for each variable
+linear_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a linear model
+  lm_model <- lm(as.formula(paste(outcome, "~ age + mvpa + protein")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  linear_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/Linear/Linear_Model_Residual_Plots_mvpa_protein.pdf", width = 8, height = 11)
+
+for (plot in linear_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+#AIC test comparing unadjusted and adjusted
+
+# Testing the fit of models with AIC
+
+aic_results <- data.frame(
+  Variable = character(),
+  Linear_AIC = numeric(),
+  Adjusted_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  linear_formula <- as.formula(paste(outcome, "~ age"))
+  adjusted_linear_formula <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  
+  # Fit linear model
+  lm_linear <- lm(linear_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  lm_adj <- lm(adjusted_linear_formula, data = data)
+  
+  # Extract AICs
+  aic_linear <- AIC(lm_linear)
+  aic_adj <- AIC(lm_adj)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, Linear_AIC = aic_linear, Adjusted_AIC = aic_adj)
+  )
+}
+
+# Write the results to an Excel file
+write.csv(aic_results, "Imputed_models/Investigative_plots/Linear/Model_fit_mvpa_protein.csv")
+
+```
+## Polynomial models
+
+```{r}
+# Initialize a list to store the combined plots for each variable
+poly_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a polynomial model
+  lm_model <- lm(as.formula(paste(outcome, "~ poly(age, 2) + mvpa + protein")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  poly_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/Polynomial/Poly_Model_Residual_Plots_mvpa_protein.pdf", width = 8, height = 11)
+
+for (plot in poly_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+#AIC test comparing unadjusted and adjusted
+
+# Testing the fit of models with AIC
+
+aic_results <- data.frame(
+  Variable = character(),
+  Poly_AIC = numeric(),
+  Adjusted_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  poly_formula <- as.formula(paste(outcome, "~ poly(age, 2)"))
+  adjusted_poly_formula <- as.formula(paste(outcome, "~ poly(age, 2) + mvpa + protein"))
+  
+  # Fit polynomial model
+  lm_poly <- lm(poly_formula, data = data)
+  
+  # Fit adjusted (quadratic) model
+  lm_adj <- lm(adjusted_poly_formula, data = data)
+  
+  # Extract AICs
+  aic_poly <- AIC(lm_poly)
+  aic_adj <- AIC(lm_adj)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, Poly_AIC = aic_poly, Adjusted_AIC = aic_adj)
+  )
+}
+
+# Write the results to an Excel file
+write.csv(aic_results, "Imputed_models/Investigative_plots/Polynomial/Poly_Model_fit_mvpa_protein.csv")
+
+```
+
+## GAM models
+
+```{r}
+# Initialize a list to store the combined plots for each variable
+GAM_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a gam model
+  gam_model <- gam(as.formula(paste(outcome, "~ s(age) + mvpa + protein")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(gam_model)
+  fitted <- fitted(gam_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  GAM_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Imputed_models/Investigative_plots/GAM/GAM_Model_Residual_Plots_mvpa_protein.pdf", width = 8, height = 11)
+
+for (plot in GAM_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+#AIC test comparing unadjusted and adjusted
+
+# Testing the fit of models with AIC
+
+aic_results <- data.frame(
+  Variable = character(),
+  GAM_AIC = numeric(),
+  Adjusted_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  GAM_formula <- as.formula(paste(outcome, "~ age"))
+  adjusted_GAM_formula <- as.formula(paste(outcome, "~ s(age) + mvpa + protein"))
+  
+  # Fit linear model
+  GAM_unadj <- gam(GAM_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  GAM_adj <- gam(adjusted_GAM_formula, data = data)
+  
+  # Extract AICs
+  aic_GAM <- AIC(GAM_unadj)
+  aic_adj <- AIC(GAM_adj)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, GAM_AIC = aic_GAM, Adjusted_AIC = aic_adj)
+  )
+}
+
+# Write the results to an Excel file
+write.csv(aic_results, "Imputed_models/Investigative_plots/GAM/GAM_Model_fit_mvpa_protein.csv")
+```
+
+
+# Results
+
+## Linear models
+
+Adjusted for mvpa and protein.
+
+```{r}
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the linear model (outcome vs. age + mvpa)
+  formula_model <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  
+  # Fit the linear model using your data
+  model <- lm(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract model coefficients and statistics
+  model_coefficients <- data.frame(
+    Term        = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error   = coef(summary(model))[ , "Std. Error"],
+    t_value     = coef(summary(model))[ , "t value"],
+    p_value     = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Label columns
+  model_coefficients$Model   = "Adjusted"
+  model_coefficients$Outcome = outcome
+  model_coefficients$R_squared = R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c("Model", "Outcome", "Term", "Coefficient",
+                                              "Std_Error", "CI_Lower", "CI_Upper",
+                                              "p_value", "R_squared")]
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End outcome loop
+
+# Create the directory if it doesn't exist
+if(!dir.exists("Linear_models")) dir.create("Linear_models")
+
+# Save the combined model results to a CSV file
+write.csv(all_model_results, file = "Imputed_models/Linear_models/Linear_results.csv", row.names = FALSE)
+
+
+
+```
+
+## Polynomial models
+
+Adjusted for mvpa and protein. 
+
+```{r}
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+for (outcome in allvariables) {
+  
+  # Create the formula for the adjusted polynomial model
+  formula_model <- as.formula(paste(outcome, "~ poly(age, 2) + mvpa + protein"))
+  
+  # Fit the adjusted polynomial model (assuming missing values are already handled)
+  model <- lm(formula_model, data = data)
+  
+  # Summary
+  model_summary <- summary(model)
+  
+  # Extract coefficients for CSV
+  model_coefficients <- data.frame(
+    Term = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error = coef(summary(model))[ , "Std. Error"],
+    t_value = coef(summary(model))[ , "t value"],
+    p_value = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Add identifying columns
+  model_coefficients$Model <- "Adjusted Polynomial"
+  model_coefficients$Outcome <- outcome
+  model_coefficients$R_squared <- R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c(
+    "Model", "Outcome", "Term", "Coefficient", "Std_Error",
+    "CI_Lower", "CI_Upper", "p_value", "R_squared"
+  )]
+  
+  # Append to the master data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End of outcome loop
+
+# Create directory if it doesn't exist
+if (!dir.exists("Polynomial_Models")) dir.create("Polynomial_Models")
+
+# Save the combined model results to a CSV
+write.csv(all_model_results, 
+          file = "Imputed_models/Polynomial_Models/Adjusted_Polynomial_results.csv", 
+          row.names = FALSE)
+
+```
+
+## GAM models
+
+Adjusted for mvpa and protein
+
+```{r}
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the GAM model (outcome vs. smooth terms for age, mvpa, protein)
+  formula_model <- as.formula(paste(outcome, "~ s(age) + mvpa + protein"))
+  
+  # Fit the GAM model
+  model <- gam(formula_model, data = data)
+  
+  # Extract summary information
+  model_summary <- summary(model)
+  
+  # Extract smooth term details
+  smooth_terms <- model_summary$s.table
+  
+  # Create a data frame for the results
+  model_results <- data.frame(
+    Model = "GAM",
+    Outcome = outcome,
+    Term = rownames(smooth_terms),
+    edf = smooth_terms[, "edf"],
+    Ref_df = smooth_terms[, "Ref.df"],
+    F_value = smooth_terms[, "F"],
+    p_value = smooth_terms[, "p-value"]
+  )
+  
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_results)
+}
+
+# Create the directory if it doesn't exist
+if(!dir.exists("GAM_models")) dir.create("GAM_models")
+
+# Save the combined model results to a CSV file
+write.csv(all_model_results, file = "Imputed_models/GAM_models/GAM_results.csv", row.names = FALSE)
+
+```
+
+
+# Plots
+
+## Linear
+
+### Adjusted
+
+```{r}
+
+# Initialize a list to store plots
+plot_list <- list()
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Define the list of "nice" intervals
+nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the linear model (outcome vs. age + mvpa)
+  formula_model <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  
+  # Fit the linear model using your data
+  model <- lm(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract the coefficient and p-value for 'age'
+  age_coef <- coef(model)["age"]
+  age_p_value <- coef(summary(model))["age", "Pr(>|t|)"]
+  
+  # Format the labels for display
+  beta_formatted <- sprintf("%.2f", age_coef)
+  p_value_formatted <- sprintf("%.3f", age_p_value)
+  if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+  
+  # Define x and y variables
+  x_var <- data[["age"]]
+  y_var <- data[[outcome]]
+  
+  # Get the outcome variable label (replace with actual labels if available)
+  y_label <- var_labels[[outcome]]  # or simply outcome if no label mapping
+  x_label <- "Age (years)"
+  
+  # Prepare the data for plotting (points)
+  plot_data <- data.frame(
+    x_var           = x_var,
+    y_var           = y_var
+  )
+  
+  y_min <- 0
+  y_max <- max(y_var, na.rm = TRUE)
+  
+  raw_interval <- y_max / 8
+  interval     <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+  
+  y_max_extended <- ceiling(y_max / interval) * interval
+  
+  y_breaks <- seq(y_min, y_max_extended, by = interval)
+  y_limits <- c(y_min, y_max_extended)
+  
+  # Generate a sequence of age values across its observed range
+  age_seq <- seq(
+    from = min(x_var, na.rm = TRUE),
+    to   = max(x_var, na.rm = TRUE),
+    length.out = 100
+  )
+  
+  # Hold covariates at the mean (or median/other typical value)
+  mean_mvpa <- mean(data$mvpa, na.rm = TRUE)
+  mean_protein <- mean(data$protein, na.rm = TRUE)
+  
+  pred_data <- expand.grid(
+    age            = age_seq,
+    mvpa           = mean_mvpa,
+    protein        = mean_protein
+  )
+  
+  preds <- predict(model, newdata = pred_data, se.fit = TRUE)
+  
+  # Add fit + 95% CI to pred_data
+  pred_data$fit <- preds$fit
+  pred_data$se  <- preds$se.fit
+  pred_data$upr <- pred_data$fit + 1.96 * pred_data$se
+  pred_data$lwr <- pred_data$fit - 1.96 * pred_data$se
+  
+  p <- ggplot(plot_data, aes(x = x_var, y = y_var)) +
+    # Raw points
+    geom_point(aes(), color = "darkblue", size = 1) +
+    
+    # The adjusted model line in RED (holding mvpa at mean)
+    geom_line(
+      data = pred_data,
+      aes(x = age, y = fit),
+      color = "red",         # fixed red line
+      size = 1.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Confidence ribbon in RED, partially transparent
+    geom_ribbon(
+      data = pred_data,
+      aes(x = age, ymin = lwr, ymax = upr),
+      alpha = 0.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Annotation for Beta and p-value
+   annotate(
+  "text",
+  x = Inf,
+  y = if (outcome %in% c("permuscle")) {
+    y_min  # position at bottom for permuscle
+  } else {
+    Inf   # position at top for other outcomes
+  },
+  label = bquote("B" == .(beta_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+  hjust = 1.05,
+  vjust = if (outcome %in% c("permuscle")) -0.5 else 1.5,
+  size = 3,
+  color = "black",
+  fontface = "bold"
+) +
+    
+    # Labels and scales
+    labs(x = x_label, y = y_label)+
+    theme(axis.title.y = element_text(face = "bold")) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 5), expand = c(0, 0.5)) +
+    scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+    
+    # Theme
+    theme_minimal(base_size = 16) +
+    theme(
+      text              = element_text(face = "bold", family = "sans"),
+      axis.title        = element_text(size = 9, color = "black"),
+      axis.line         = element_line(color = "black"),
+      axis.text         = element_text(size = 8, color = "black"),
+      axis.ticks        = element_line(color = "black", size = 0.8),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white", color = "white")
+    )
+  
+  # Save this plot in the list
+  plot_list[[length(plot_list) + 1]] <- p
+  
+  model_coefficients <- data.frame(
+    Term        = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error   = coef(summary(model))[ , "Std. Error"],
+    t_value     = coef(summary(model))[ , "t value"],
+    p_value     = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Label columns
+  model_coefficients$Model   = "Adjusted"
+  model_coefficients$Outcome = outcome
+  model_coefficients$R_squared = R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c("Model", "Outcome", "Term", "Coefficient",
+                                                "Std_Error", "CI_Lower", "CI_Upper",
+                                                "p_value", "R_squared")]
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End outcome loop
+
+combined_plot <- wrap_plots(plot_list, ncol = 4) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 12))
+
+# Save the combined plot to a PDF file
+tiff_filename <- "Imputed_models/Linear_Models/Adjusted_Linear_Plots.tiff"
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+
+```
+
+### Unadjusted
+
+```{r}
+# Initialize a list to store plots
+plot_list <- list()
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Define the list of "nice" intervals
+nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the unadjusted linear model (outcome vs. age)
+  formula_model <- as.formula(paste(outcome, "~ age"))
+  
+  # Fit the linear model using your data
+  model <- lm(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract the coefficient and p-value for 'age'
+  age_coef <- coef(model)["age"]
+  age_p_value <- coef(summary(model))["age", "Pr(>|t|)"]
+  
+  # Format the labels for display
+  beta_formatted <- sprintf("%.2f", age_coef)
+  p_value_formatted <- sprintf("%.3f", age_p_value)
+  if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+  
+  # Define x and y variables
+  x_var <- data[["age"]]
+  y_var <- data[[outcome]]
+  
+  # Get the outcome variable label (replace with actual labels if available)
+  y_label <- var_labels[[outcome]]  # or simply outcome if no label mapping
+  x_label <- "Age (years)"
+  
+  # Prepare the data for plotting (points)
+  plot_data <- data.frame(
+    x_var           = x_var,
+    y_var           = y_var
+  )
+  
+  y_min <- 0
+  y_max <- max(y_var, na.rm = TRUE)
+  
+  raw_interval <- y_max / 8
+  interval     <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+  
+  y_max_extended <- ceiling(y_max / interval) * interval
+  
+  y_breaks <- seq(y_min, y_max_extended, by = interval)
+  y_limits <- c(y_min, y_max_extended)
+  
+  # Generate a sequence of age values across its observed range
+  age_seq <- seq(
+    from = min(x_var, na.rm = TRUE),
+    to   = max(x_var, na.rm = TRUE),
+    length.out = 100
+  )
+  
+  # Prepare prediction data
+  pred_data <- data.frame(age = age_seq)
+  
+  preds <- predict(model, newdata = pred_data, se.fit = TRUE)
+  
+  # Add fit + 95% CI to pred_data
+  pred_data$fit <- preds$fit
+  pred_data$se  <- preds$se.fit
+  pred_data$upr <- pred_data$fit + 1.96 * pred_data$se
+  pred_data$lwr <- pred_data$fit - 1.96 * pred_data$se
+  
+  p <- ggplot(plot_data, aes(x = x_var, y = y_var)) +
+    # Raw points
+    geom_point(aes(), color = "darkblue", size = 1) +
+    
+    # The unadjusted model line in RED
+    geom_line(
+      data = pred_data,
+      aes(x = age, y = fit),
+      color = "red",         # fixed red line
+      size = 1.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Confidence ribbon in RED, partially transparent
+    geom_ribbon(
+      data = pred_data,
+      aes(x = age, ymin = lwr, ymax = upr),
+      alpha = 0.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Annotation for Beta and p-value
+    annotate(
+    "text",
+    x = Inf,
+    y = if (outcome == "permuscle") {
+      y_min  # position at bottom for permuscle
+    } else {
+      Inf   # position at top for other outcomes
+    },
+    label = bquote("B" == .(beta_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+    hjust = 1.05,
+    vjust = if (outcome == "permuscle") -0.5 else 1.5,
+    size = 3,
+    color = "black",
+    fontface = "bold"
+  ) +
+    
+    # Labels and scales
+    labs(x = x_label, y = y_label, color = NULL)+
+    theme(axis.title.y = element_text(face = "bold")) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 5), expand = c(0, 0.5)) +
+    scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+    
+    # Theme
+    theme_minimal(base_size = 16) +
+    theme(
+      text              = element_text(face = "bold", family = "sans"),
+      axis.title        = element_text(size = 9, color = "black"),
+      axis.line         = element_line(color = "black"),
+      axis.text         = element_text(size = 8, color = "black"),
+      axis.ticks        = element_line(color = "black", size = 0.8),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white", color = "white")
+    )
+  
+  # Save this plot in the list
+  plot_list[[length(plot_list) + 1]] <- p
+  
+  model_coefficients <- data.frame(
+    Term        = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error   = coef(summary(model))[ , "Std. Error"],
+    t_value     = coef(summary(model))[ , "t value"],
+    p_value     = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Label columns
+  model_coefficients$Model   = "Unadjusted"
+  model_coefficients$Outcome = outcome
+  model_coefficients$R_squared = R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c("Model", "Outcome", "Term", "Coefficient",
+                                                "Std_Error", "CI_Lower", "CI_Upper",
+                                                "p_value", "R_squared")]
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End outcome loop
+
+combined_plot <- wrap_plots(plot_list, ncol = 4) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 12))
+
+# Save the combined plot to a TIFF file
+tiff_filename <- "Imputed_models/Linear_Models/Unadjusted_Linear_Plots.tiff"
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+
+```
+
+## GAM
+
+### Adjusted
+
+```{r}
+
+# Initialize a list to store plots
+plot_list <- list()
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Define the list of "nice" intervals
+nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the GAM model (outcome vs. age + mvpa + protein)
+  formula_model <- as.formula(paste(outcome, "~ s(age) + mvpa + protein"))
+  
+  # Fit the GAM model using your data
+  model <- gam(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract the EDF and p-value for 'age'
+  age_smooth <- model_summary$s.table["s(age)", ]
+  edf <- round(age_smooth["edf"], 2)
+  p_value <- age_smooth["p-value"]
+  
+  # Format the labels for display
+  edf_formatted <- sprintf("%.2f", edf)
+  p_value_formatted <- sprintf("%.3f", p_value)
+  if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+  
+  # Define x and y variables
+  x_var <- data[["age"]]
+  y_var <- data[[outcome]]
+  
+  # Get the outcome variable label (replace with actual labels if available)
+  y_label <- var_labels[[outcome]]  # or simply outcome if no label mapping
+  x_label <- "Age (years)"
+  
+  # Prepare the data for plotting (points)
+  plot_data <- data.frame(
+    x_var           = x_var,
+    y_var           = y_var
+  )
+  
+  y_min <- 0
+  y_max <- max(y_var, na.rm = TRUE)
+  
+  raw_interval <- y_max / 8
+  interval     <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+  
+  y_max_extended <- ceiling(y_max / interval) * interval
+  
+  y_breaks <- seq(y_min, y_max_extended, by = interval)
+  y_limits <- c(y_min, y_max_extended)
+  
+  # Generate a sequence of age values across its observed range
+  age_seq <- seq(
+    from = min(x_var, na.rm = TRUE),
+    to   = max(x_var, na.rm = TRUE),
+    length.out = 100
+  )
+  
+  # Hold mvpa at its mean (or median/other typical value)
+  mean_mvpa <- mean(data$mvpa, na.rm = TRUE)
+  mean_protein <- mean(data$protein, na.rm = TRUE)
+  
+  pred_data <- expand.grid(
+    age            = age_seq,
+    mvpa           = mean_mvpa,
+    protein        = mean_protein)
+  
+  # Predict using the GAM model
+  preds <- predict(model, newdata = pred_data, se.fit = TRUE)
+  
+  # Add fit + 95% CI to pred_data
+  pred_data$fit <- preds$fit
+  pred_data$se  <- preds$se.fit
+  pred_data$upr <- pred_data$fit + 1.96 * pred_data$se
+  pred_data$lwr <- pred_data$fit - 1.96 * pred_data$se
+  
+  p <- ggplot(plot_data, aes(x = x_var, y = y_var)) +
+    # Raw points, colored by blue
+    geom_point(aes(), color = "darkblue", size = 1) +
+    
+    # The adjusted model line in RED (holding mvpa at mean)
+    geom_line(
+      data = pred_data,
+      aes(x = age, y = fit),
+      color = "red",         # fixed red line
+      size = 1.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Confidence ribbon in RED, partially transparent
+    geom_ribbon(
+      data = pred_data,
+      aes(x = age, ymin = lwr, ymax = upr),
+      alpha = 0.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Annotation for EDF and p-value
+    annotate(
+      "text",
+      x = Inf,
+      y = Inf,
+      label = bquote("EDF" == .(edf_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+      hjust = 1.05,
+      vjust = 1.5,
+      size = 3,
+      color = "black",
+      fontface = "bold"
+    ) +
+    
+    # Labels and scales
+    labs(x = x_label, y = y_label, color = NULL)+
+    theme(axis.title.y = element_text(face = "bold")) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 5), expand = c(0, 0.5)) +
+    scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+    
+    # Theme
+    theme_minimal(base_size = 16) +
+    theme(
+      text              = element_text(face = "bold", family = "sans"),
+      axis.title        = element_text(size = 9, color = "black"),
+      axis.line         = element_line(color = "black"),
+      axis.text         = element_text(size = 8, color = "black"),
+      axis.ticks        = element_line(color = "black", size = 0.8),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white", color = "white")
+    )
+  
+  # Save this plot in the list
+  plot_list[[length(plot_list) + 1]] <- p
+  
+  # Extract model results for CSV
+  model_results <- data.frame(
+    Model = "GAM",
+    Outcome = outcome,
+    Term = rownames(model_summary$s.table),
+    edf = model_summary$s.table[, "edf"],
+    Ref_df = model_summary$s.table[, "Ref.df"],
+    F_value = model_summary$s.table[, "F"],
+    p_value = model_summary$s.table[, "p-value"]
+  )
+  
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_results)
+  
+}  # End outcome loop
+
+# Create combined plot
+combined_plot <- wrap_plots(plot_list, ncol = 4) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 12))
+
+# Save the combined plot to a TIFF file
+tiff_filename <- "Imputed_models/GAM_Models/Adjusted_GAM_Plots.tiff"
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+
+```
+
+### Unadjusted
+
+```{r}
+
+# Initialize a list to store plots
+plot_list <- list()
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Define the list of "nice" intervals
+nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the unadjusted GAM model (outcome vs. age only)
+  formula_model <- as.formula(paste(outcome, "~ s(age)"))
+  
+  # Fit the GAM model using your data
+  model <- gam(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract the EDF and p-value for 'age'
+  age_smooth <- model_summary$s.table["s(age)", ]
+  edf <- round(age_smooth["edf"], 2)
+  p_value <- age_smooth["p-value"]
+  
+  # Format the labels for display
+  edf_formatted <- sprintf("%.2f", edf)
+  p_value_formatted <- sprintf("%.3f", p_value)
+  if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+  
+  # Define x and y variables
+  x_var <- data[["age"]]
+  y_var <- data[[outcome]]
+  
+  # Get the outcome variable label
+  y_label <- var_labels[[outcome]]  # or simply outcome if no label mapping
+  x_label <- "Age (years)"
+  
+  # Prepare the data for plotting (points)
+  plot_data <- data.frame(
+    x_var = x_var,
+    y_var = y_var
+  )
+  
+  y_min <- 0
+  y_max <- max(y_var, na.rm = TRUE)
+  
+  raw_interval <- y_max / 8
+  interval     <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+  
+  y_max_extended <- ceiling(y_max / interval) * interval
+  
+  y_breaks <- seq(y_min, y_max_extended, by = interval)
+  y_limits <- c(y_min, y_max_extended)
+  
+  # Generate a sequence of age values across its observed range
+  age_seq <- seq(
+    from = min(x_var, na.rm = TRUE),
+    to   = max(x_var, na.rm = TRUE),
+    length.out = 100
+  )
+  
+  pred_data <- data.frame(age = age_seq)
+  
+  # Predict using the GAM model
+  preds <- predict(model, newdata = pred_data, se.fit = TRUE)
+  
+  # Add fit + 95% CI to pred_data
+  pred_data$fit <- preds$fit
+  pred_data$se  <- preds$se.fit
+  pred_data$upr <- pred_data$fit + 1.96 * pred_data$se
+  pred_data$lwr <- pred_data$fit - 1.96 * pred_data$se
+  
+  p <- ggplot(plot_data, aes(x = x_var, y = y_var)) +
+    geom_point(color = "darkblue", size = 1) +
+    
+    # The unadjusted model line in RED
+    geom_line(
+      data = pred_data,
+      aes(x = age, y = fit),
+      color = "red",
+      size = 1.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Confidence ribbon in RED, partially transparent
+    geom_ribbon(
+      data = pred_data,
+      aes(x = age, ymin = lwr, ymax = upr),
+      alpha = 0.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Annotation for EDF and p-value
+    annotate(
+      "text",
+      x = Inf,
+      y = Inf,
+      label = bquote("EDF" == .(edf_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+      hjust = 1.05,
+      vjust = 1.5,
+      size = 3,
+      color = "black",
+      fontface = "bold"
+    ) +
+    
+    # Labels and scales
+    labs(x = x_label, y = y_label, color = NULL) +
+    theme(axis.title.y = element_text(face = "bold")) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 5), expand = c(0, 0.5)) +
+    scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+    
+    # Theme
+    theme_minimal(base_size = 16) +
+    theme(
+      text              = element_text(face = "bold", family = "sans"),
+      axis.title        = element_text(size = 9, color = "black"),
+      axis.line         = element_line(color = "black"),
+      axis.text         = element_text(size = 8, color = "black"),
+      axis.ticks        = element_line(color = "black", size = 0.8),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white", color = "white")
+    )
+  
+  # Save this plot in the list
+  plot_list[[length(plot_list) + 1]] <- p
+  
+  # Extract model results for CSV
+  model_results <- data.frame(
+    Model = "GAM",
+    Outcome = outcome,
+    Term = rownames(model_summary$s.table),
+    edf = model_summary$s.table[, "edf"],
+    Ref_df = model_summary$s.table[, "Ref.df"],
+    F_value = model_summary$s.table[, "F"],
+    p_value = model_summary$s.table[, "p-value"]
+  )
+  
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_results)
+}  # End outcome loop
+
+# Create combined plot
+combined_plot <- wrap_plots(plot_list, ncol = 4) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 12))
+
+# Save the combined plot to a TIFF file
+tiff_filename <- "Imputed_models/GAM_Models/Unadjusted_GAM_Plots.tiff"
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+
+```
+

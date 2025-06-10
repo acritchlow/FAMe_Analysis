@@ -1,0 +1,814 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+
+setwd("C:/Users/annab/OneDrive - Deakin University/PhD/Studies/FAMe Study/FAMe Data Analysis/R analysis")
+
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(gtsummary)
+library(cardx)
+library(gt)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(mgcv)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(ggbreak)
+library(patchwork)
+library(sandwich)
+library(lmtest)
+library(car)
+
+data <- read_excel("C:/Users/annab/OneDrive - Deakin University/PhD/Studies/FAMe Study/FAMe Data Analysis/R analysis/FAMe_Imputed_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+
+```
+
+# Define list of outcome variables
+
+Add a list of variables for muscle morphology when I have data.
+
+```{r}
+
+# Define outcome variables for hormone association analysis
+bodycompvariables <- c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle")
+
+functionvariables <-c("onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+
+allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+
+neuro <-c("mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+
+hormones <-c(hormonevariables <- c("E2", "FEI", "TT", "FAI", "prog", "TEratio"))
+
+# Mapping variable names to full names
+bodycomp_var_labels <- c(
+  bodyfat = "Body fat (%)",
+  ALM = "Appendicular lean mass (kg)",
+  ALMh = expression("ALM index (kg/m"^2*")"),  
+  thighmuscle = expression("Thigh muscle CSA (cm"^2*")"),
+  intrafat = expression("Intramuscular fat (cm"^2*")"),  
+  subfat = expression("Subcutaneous fat (cm"^2*")"),  
+  permuscle = "Relative thigh muscle (%)"
+)
+
+function_var_labels <-c(
+  onerep = "e1RM (kg)",
+  onerepllm = "Normalised e1-RM (kg/kg LLM)",
+  onerepcsa = expression("Normalised e1RM (kg/cm"^2*")")
+)
+
+all_var_labels <- c(
+  bodyfat = "Body fat (%)",
+  ALM = "Appendicular lean mass (kg)",
+  ALMh = expression("ALM index (kg/m"^2*")"),  
+  thighmuscle = expression("Thigh muscle CSA (cm"^2*")"),
+  intrafat = expression("Intramuscular fat (cm"^2*")"),  
+  subfat = expression("Subcutaneous fat (cm"^2*")"), 
+  permuscle = "Relative thigh muscle (%)",
+  onerep = "e1RM (kg)",
+  onerepllm = "Normalised e1RM (kg/kg)",
+  onerepcsa = expression("Normalised e1RM (kg/cm"^2*")")
+)
+
+plot_hormone_var_labels <- c(
+  E2 = "log10(Oestradiol)",
+  FEI = "log10(Free oestradiol index)",
+  TT = "log10(Total testosterone)",
+  FAI = "log10(Free androgen index)",
+  prog = "log10(Progesterone)",
+  TEratio = "log10(Total testosterone/oestradiol ratio)"
+)
+
+```
+
+# Unadjusted models
+
+In general: some heteroscedasticity observed. Intrafat and subfat skewed. Onerep, onerepllm, and onerepcsa sometimes slightly skewed.
+
+Log transformation of intrafat, subfat, onerep, onerepllm, onerepcsa may improve normality of all  residuals so consider this in model - although this makes interpretation and comparison tricky. 
+
+```{r}
+
+# Initialize empty data frames to store combined results
+all_unadjusted_results <- data.frame()
+
+for (hormone in hormones) {
+
+# Initialize empty data frames to store results
+unadjusted_results <- data.frame()
+
+ # Create a PDF file to save the unadjusted model plots
+  pdf(file = paste0("Imputed_models/Unadjusted_models/Residual_Plots_", hormone, ".pdf"))
+  
+  # Loop over each outcome variable for unadjusted models
+  for (outcome in allvariables) {
+    # Create the formula for the linear model
+    formula_unadjusted <- as.formula(paste(outcome, "~", hormone))
+    
+    # Fit the linear model
+    model_unadjusted <- lm(formula_unadjusted, data = data)
+    
+    # Extract residuals and fitted values
+    residuals <- resid(model_unadjusted)
+    fitted_values <- fitted(model_unadjusted)
+    
+    # Set up the plotting area to have three plots per page
+    par(mfrow = c(3, 1))
+    
+    # 1. Residuals vs Fitted Plot
+    plot(fitted_values, residuals,
+         main = paste("Unadjusted Model Residuals vs Fitted for", outcome, "and", hormone),
+         xlab = "Fitted Values",
+         ylab = "Residuals")
+    abline(h = 0, col = "red")
+    
+    # 2. Q-Q Plot of Residuals
+    qqnorm(residuals,
+           main = paste("Unadjusted Model Normal Q-Q Plot for", outcome, "and", hormone),
+           ylab = "Quantiles of Residuals")
+    qqline(residuals, col = "red")
+    
+    # 3. Histogram of Residuals
+    hist(residuals,
+         main = paste("Unadjusted Model Histogram of Residuals for", outcome, "and", hormone),
+         xlab = "Residuals",
+         breaks = 20)
+    
+    # Extract model summary statistics using broom
+    tidy_unadjusted <- tidy(model_unadjusted, conf.int = TRUE)
+    glance_unadjusted <- glance(model_unadjusted)
+    
+    # Add model and outcome information
+    tidy_unadjusted$Model <- "Unadjusted"
+    tidy_unadjusted$Outcome <- outcome
+    tidy_unadjusted$Hormone <- hormone
+    tidy_unadjusted$R_squared <- glance_unadjusted$r.squared
+    
+    # Reorder columns
+    tidy_unadjusted <- tidy_unadjusted[, c("Model", "Outcome", "Hormone", "term", "estimate", "std.error", "conf.low", "conf.high", "p.value", "R_squared")]
+    colnames(tidy_unadjusted) <- c("Model", "Outcome", "Hormone", "Term", "Coefficient", "Std_Error", "CI_Lower", "CI_Upper", "p_value", "R_squared")
+    
+    # Append to the unadjusted results data frame
+    unadjusted_results <- rbind(unadjusted_results, tidy_unadjusted)
+  }
+  
+  # Close the PDF device for unadjusted models
+  dev.off()
+  
+  # Append to the combined unadjusted results data frame
+  all_unadjusted_results <- rbind(all_unadjusted_results, unadjusted_results)
+
+  }
+
+# Save the combined unadjusted results to a CSV file
+write.csv(all_unadjusted_results, file = "Imputed_Models/Unadjusted_models/All_Unadjusted_results.csv", row.names = FALSE)
+
+```
+
+# Adjusted models
+
+Covariates to include:
+
+Body composition: age, mvpa, protein (tested with AIC)
+Function: age, bmi, mvpa, protein (tested with AIC)
+
+Lack of multicolinearity confirmed with VIF < 1.3 for all covariates. 
+
+```{r}
+# Define covariates
+covariates <- c("age", "mvpa", "protein")
+
+# Initialize empty data frames to store combined results
+all_adjusted_results <- data.frame()
+all_vif_results <- data.frame()
+
+for (hormone in hormones) {
+  # Initialize empty data frames to store results
+  adjusted_results <- data.frame()
+  vif_results <- data.frame()
+
+  # Create a PDF file to save the adjusted model plots
+  pdf(file = paste0("Imputed_models/Adjusted_models/Bodycomp_Residual_Plots_", hormone, ".pdf"))
+
+  # Loop over each outcome variable for adjusted models
+  for (outcome in bodycompvariables) {
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(
+      paste(outcome, "~", paste(c(hormone, covariates), collapse = " + "))
+    )
+
+    # Fit the linear model
+    model_adjusted <- lm(formula_adjusted, data = data)
+
+    # Extract residuals and fitted values
+    residuals <- resid(model_adjusted)
+    fitted_values <- fitted(model_adjusted)
+
+    # Set up the plotting area to have three plots per page
+    par(mfrow = c(3, 1))
+
+    # 1. Residuals vs Fitted Plot
+    plot(fitted_values, residuals,
+         main = paste("Adjusted Model Residuals vs Fitted for", outcome, "and", hormone),
+         xlab = "Fitted Values",
+         ylab = "Residuals")
+    abline(h = 0, col = "red")
+
+    # 2. Q-Q Plot of Residuals
+    qqnorm(residuals,
+           main = paste("Adjusted Model Normal Q-Q Plot for", outcome, "and", hormone),
+           ylab = "Quantiles of Residuals")
+    qqline(residuals, col = "red")
+
+    # 3. Histogram of Residuals
+    hist(residuals,
+         main = paste("Adjusted Model Histogram of Residuals for", outcome, "and", hormone),
+         xlab = "Residuals",
+         breaks = 20)
+
+    # Extract model summary statistics using broom
+    tidy_adjusted <- tidy(model_adjusted, conf.int = TRUE)
+    glance_adjusted <- glance(model_adjusted)
+
+    # Add model and outcome information
+    tidy_adjusted$Model <- "Adjusted"
+    tidy_adjusted$Outcome <- outcome
+    tidy_adjusted$Hormone <- hormone
+
+    # Get R-squared from glance
+    tidy_adjusted$R_squared <- glance_adjusted$r.squared
+
+    # Get AIC from glance
+    tidy_adjusted$AIC <- glance_adjusted$AIC
+
+    # Reorder columns (now including AIC)
+    tidy_adjusted <- tidy_adjusted[, c(
+      "Model", "Outcome", "Hormone",
+      "term", "estimate", "std.error",
+      "conf.low", "conf.high",
+      "p.value", "R_squared",
+      "AIC"
+    )]
+
+    colnames(tidy_adjusted) <- c(
+      "Model", "Outcome", "Hormone",
+      "Term", "Coefficient", "Std_Error",
+      "CI_Lower", "CI_Upper",
+      "p_value", "R_squared",
+      "AIC"
+    )
+
+    # Append to the adjusted results data frame
+    adjusted_results <- rbind(adjusted_results, tidy_adjusted)
+
+    # Calculate VIFs for the adjusted model
+    vif_values <- vif(model_adjusted)
+    vif_df <- data.frame(
+      Model = "Adjusted",
+      Outcome = outcome,
+      Hormone = hormone,
+      Term = names(vif_values),
+      VIF = vif_values
+    )
+
+    # Append to the VIF results data frame
+    vif_results <- rbind(vif_results, vif_df)
+  }
+
+  # Close the PDF device for adjusted models
+  dev.off()
+
+  # Append to the combined adjusted results data frame
+  all_adjusted_results <- rbind(all_adjusted_results, adjusted_results)
+
+  # Append to the combined VIF results data frame
+  all_vif_results <- rbind(all_vif_results, vif_results)
+}
+
+# Save the combined adjusted results to a CSV file
+write.csv(
+  all_adjusted_results,
+  file = "Imputed_Models/Adjusted_models/Bodycomp_Adjusted_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+
+# Save the combined VIF results to a CSV file
+write.csv(
+  all_vif_results,
+  file = "Imputed_Models/Adjusted_models/Bodycomp_VIF_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+
+
+```
+
+# Standardised, robust models
+
+Bodycomp: age, mvpa, protein
+Function: age, mvpa, protein, bmi
+
+```{r}
+
+covariates <- c("age","mvpa", "protein", "bmi")
+
+# Standardize the specific variables
+#data_transformed <- data %>%
+  #mutate(across(all_of(hormones), ~ log10(.))) 
+data_standardized <- data %>%
+  mutate(across(all_of(c(allvariables, covariates, hormones)), scale))
+
+# Initialize empty data frames to store combined results
+all_robust_adjusted_results <- data.frame()
+
+# Loop over each hormone
+for (hormone in hormones) {
+  
+  # Initialize empty data frame to store results
+  robust_adjusted_results <- data.frame()
+  
+  # Loop over each outcome variable for adjusted models with robust standard errors
+  for (outcome in functionvariables) {
+    
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(paste(outcome, "~", paste(c(hormone, covariates), collapse = " + ")))
+    
+    # Fit the linear model using standardized data
+    model_adjusted <- lm(formula_adjusted, data = data_standardized)
+    
+    # Calculate robust standard errors
+    robust_se <- vcovHC(model_adjusted, type = "HC1")
+    robust_summary <- coeftest(model_adjusted, vcov = robust_se)
+    
+    # Extract coefficients and p-values from robust summary
+    robust_coefficients <- data.frame(
+      Term = rownames(robust_summary),
+      Coefficient = robust_summary[, "Estimate"],
+      Std_Error = robust_summary[, "Std. Error"],
+      t_value = robust_summary[, "t value"],
+      p_value = robust_summary[, "Pr(>|t|)"]
+    )
+    
+    # Calculate confidence intervals manually
+    alpha <- 0.05  # 95% confidence interval
+    critical_value <- qt(1 - alpha/2, df = model_adjusted$df.residual)
+    robust_coefficients$CI_Lower <- robust_coefficients$Coefficient - critical_value * robust_coefficients$Std_Error
+    robust_coefficients$CI_Upper <- robust_coefficients$Coefficient + critical_value * robust_coefficients$Std_Error
+    
+    # Get R-squared from the original model
+    glance_adjusted <- glance(model_adjusted)
+    
+    # Add model, outcome, and hormone information
+    robust_coefficients$Model <- "Robust Adjusted"
+    robust_coefficients$Outcome <- outcome
+    robust_coefficients$Hormone <- hormone
+    robust_coefficients$R_squared <- glance_adjusted$r.squared
+    
+    # Reorder columns
+    robust_coefficients <- robust_coefficients[, c("Model", "Outcome", "Hormone", "Term", "Coefficient", "Std_Error",
+                                                   "CI_Lower", "CI_Upper", "p_value", "R_squared")]
+    
+    # Append to the robust adjusted results data frame
+    robust_adjusted_results <- rbind(robust_adjusted_results, robust_coefficients)
+    
+  }  # End of outcome loop
+  
+  # Append to the combined robust adjusted results data frame
+  all_robust_adjusted_results <- rbind(all_robust_adjusted_results, robust_adjusted_results)
+  
+}  # End of hormone loop
+
+# Create directory if it doesn't exist
+if (!dir.exists("Robust_standardised_adjusted_models")) {
+  dir.create("Robust_standardised_adjusted_models")
+}
+
+# Save the combined robust adjusted results to a CSV file
+write.csv(all_robust_adjusted_results, file = "Imputed_Models/Robust_standardised_adjusted_models/FUNCTION_Robust_Adjusted_results.csv", row.names = FALSE)
+```
+
+# Plots
+
+These plots have been adjusted for the covariates:
+
+Bodycomp: age, mvpa, protein (combined plot height 15)
+Function: age, mvpa, protein, bmi (combined plot height to 5)
+
+```{r}
+
+covariates <- c("age","mvpa", "protein", "bmi") 
+
+# Standardize all variables including covariates and convert to numeric
+data_standardized <- data %>%
+  mutate(across(all_of(c(allvariables, covariates, hormones)), ~ as.numeric(scale(.))))
+
+# Calculate means and SDs for back-transformation
+means_sds <- data.frame(
+  Variable = c(allvariables, hormones),
+  Mean = sapply(data[c(allvariables, hormones)], mean, na.rm = TRUE),
+  SD = sapply(data[c(allvariables, hormones)], sd, na.rm = TRUE)
+)
+
+# Initialize empty data frames to store combined results
+all_robust_adjusted_results <- data.frame()
+
+# Loop over each hormone
+for (hormone in hormones) {
+  
+  # Initialize a list to store plots for each hormone
+  hormone_plot_list <- list()
+  
+  # Loop over each outcome variable
+  for (outcome in functionvariables) {
+    
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(paste(outcome, "~", paste(c(hormone, covariates), collapse = " + ")))
+    
+    # Fit the linear model using standardized data
+    model_adjusted <- lm(formula_adjusted, data = data_standardized)
+    
+    # Calculate robust standard errors
+    robust_se <- vcovHC(model_adjusted, type = "HC1")
+    robust_summary <- coeftest(model_adjusted, vcov = robust_se)
+    
+    # Extract the coefficient and p-value for the hormone
+    hormone_coef <- robust_summary[rownames(robust_summary) == hormone, "Estimate"]
+    hormone_p_value <- robust_summary[rownames(robust_summary) == hormone, "Pr(>|t|)"]
+    
+    # Format the labels for display
+    beta_formatted <- sprintf("%.2f", hormone_coef)
+    p_value_formatted <- sprintf("%.3f", hormone_p_value)
+    if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+    
+    # Define x_var (hormone variable on transformed scale)
+    x_var <- data_transformed[[hormone]]
+    y_var <- data[[outcome]]  # Original outcome variable
+    
+    # Get the outcome variable label
+    y_label <- all_var_labels[[outcome]]        # Replace with your variable labels
+    x_label <- plot_hormone_var_labels[[hormone]] # Replace with your hormone labels
+    
+    # Prepare the data for plotting
+    plot_data <- data.frame(
+      x_var = x_var,
+      y_var = y_var,
+      age = data[["age"]]
+    )
+    
+    # Prepare y-axis
+    y_min <- 0
+    y_max <- max(y_var, na.rm = TRUE)
+    raw_interval <- y_max / 5
+    nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100)
+    interval <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+    y_breaks <- seq(y_min, ceiling(y_max / interval) * interval, by = interval)
+    y_limits <- c(y_min, max(y_breaks))
+    
+    ### Generate Adjusted Predictions for Plotting
+    
+    # Create a sequence of hormone values over the observed range
+    hormone_seq <- seq(min(x_var, na.rm = TRUE), max(x_var, na.rm = TRUE), length.out = 100)
+    
+    # Standardize the hormone sequence using original mean and SD
+    hormone_mean <- mean(data_transformed[[hormone]], na.rm = TRUE)
+    hormone_sd <- sd(data_transformed[[hormone]], na.rm = TRUE)
+    hormone_seq_standardized <- (hormone_seq - hormone_mean) / hormone_sd
+    
+    # Prepare the new data for prediction
+    newdata <- data.frame(
+      hormone_seq_standardized
+    )
+    names(newdata) <- hormone  # Ensure the column name matches the model
+    
+    # Set covariates to their mean (zero after standardization)
+    for (covariate in covariates) {
+      newdata[[covariate]] <- 0  # Mean of standardized variables
+    }
+    
+    # Ensure that variable types in newdata match those in data_standardized
+    newdata <- newdata %>%
+      mutate(across(everything(), as.numeric))
+    
+    # Predict the standardized outcome variable
+    predicted_standardized <- predict(model_adjusted, newdata = newdata)
+    
+    # Back-transform the predicted values to the original scale
+    outcome_mean <- mean(data[[outcome]], na.rm = TRUE)
+    outcome_sd <- sd(data[[outcome]], na.rm = TRUE)
+    predicted_outcome <- predicted_standardized * outcome_sd + outcome_mean
+    
+    # Create a data frame for plotting the adjusted line
+    adjusted_line_data <- data.frame(
+      x_var = hormone_seq,
+      y_var = predicted_outcome
+    )
+    
+    # Generate the plot
+    p <- ggplot(plot_data, aes(x = x_var, y = y_var, color = age)) +
+      geom_point(size = 3, alpha = 0.9) +
+      scale_color_gradient(low = "lightblue", high = "darkblue", guide = guide_colorbar(ticks = FALSE)) +
+      geom_line(data = adjusted_line_data, aes(x = x_var, y = y_var), color = "red", size = 1.2) +
+      annotate("text", x = Inf, y = Inf, label = bquote(beta == .(beta_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+               hjust = 1.05, vjust = 1.5, size = 5, color = "black", fontface = "bold") +
+      labs(x = x_label, y = y_label, color = "Age (years)") +
+      scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+      scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+      theme_minimal(base_size = 16) +
+      theme(
+        text = element_text(face = "bold", family = "sans"),
+        axis.title = element_text(size = 14, color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.text = element_text(size = 12, color = "black"),
+        axis.ticks = element_line(color = "black", size = 0.8),
+        axis.ticks.length = unit(0.2, "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = "white"),
+        legend.position = "none"
+      )
+    
+    # Collect the plot in the list for the current hormone
+    hormone_plot_list[[length(hormone_plot_list) + 1]] <- p
+    
+  }  # End of outcome loop
+  
+  # Combine all plots for the current hormone into one page using wrap_plots
+  combined_plot <- wrap_plots(hormone_plot_list, ncol = 3)
+  
+  # Save the combined plot to a PDF file
+  if(!dir.exists("Imputed_Models/Robust_standardised_adjusted_models")) dir.create("Robust_standardised_adjusted_models")
+  pdf_filename <- paste0("Imputed_Models/Robust_standardised_adjusted_models/Adjusted_Function_Plots_", hormone, ".pdf")
+  ggsave(pdf_filename, combined_plot, width = 15, height = 15)
+  
+}  # End of hormone loop
+
+
+```
+
+# Two hormone models
+
+## AIC
+
+```{r}
+# Testing the fit of models with AIC
+
+aic_results <- data.frame(
+  Variable = character(),
+  Linear_AIC = numeric(),
+  Polynomial_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  onehormone_formula <- as.formula(paste(outcome, "~ FEI + protein + mvpa"))
+  twohormone_formula <- as.formula(paste(outcome, "~ FEI + prog + protein + mvpa"))
+  
+  # Fit linear model
+  lm_onehormone <- lm(onehormone_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  lm_twohormone <- lm(twohormone_formula, data = data)
+  
+  # Extract AICs
+  aic_onehormone <- AIC(lm_onehormone)
+  aic_twohormone <- AIC(lm_twohormone)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, One_AIC = aic_onehormone, Two_AIC = aic_twohormone)
+  )
+}
+
+# Write the results to an Excel file
+write.csv(aic_results, "Imputed_Models/Multiple_Hormones/Two_hormone_Poly_Model_fit.csv")
+```
+
+
+## VIF and residuals
+
+```{r}
+
+# Define covariates and hormones to run through
+covariates <- c("age", "prog", "mvpa", "protein")
+hormones <- c("E2", "FEI")
+
+# Initialize empty data frames to store combined results
+all_adjusted_results <- data.frame()
+all_vif_results <- data.frame()
+
+for (hormone in hormones) {
+  # Initialize empty data frames to store results
+  adjusted_results <- data.frame()
+  vif_results <- data.frame()
+  
+  # Create a PDF file to save the adjusted model plots
+  pdf(file = paste0("Imputed_models/Adjusted_models/2Hormone_Residual_Plots_", hormone, ".pdf"))
+  
+  # Loop over each outcome variable for adjusted models
+  for (outcome in bodycompvariables) {
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(
+      paste(outcome, "~", paste(c(hormone, covariates), collapse = " + "))
+    )
+    
+    # Fit the linear model
+    model_adjusted <- lm(formula_adjusted, data = data)
+    
+    # Extract residuals and fitted values
+    residuals <- resid(model_adjusted)
+    fitted_values <- fitted(model_adjusted)
+    
+    # Set up the plotting area to have three plots per page
+    par(mfrow = c(3, 1))
+    
+    # 1. Residuals vs Fitted Plot
+    plot(fitted_values, residuals,
+         main = paste("Adjusted Model Residuals vs Fitted for", outcome, "and", hormone),
+         xlab = "Fitted Values",
+         ylab = "Residuals")
+    abline(h = 0, col = "red")
+    
+    # 2. Q-Q Plot of Residuals
+    qqnorm(residuals,
+           main = paste("Adjusted Model Normal Q-Q Plot for", outcome, "and", hormone),
+           ylab = "Quantiles of Residuals")
+    qqline(residuals, col = "red")
+    
+    # 3. Histogram of Residuals
+    hist(residuals,
+         main = paste("Adjusted Model Histogram of Residuals for", outcome, "and", hormone),
+         xlab = "Residuals",
+         breaks = 20)
+    
+    # Extract model summary statistics using broom
+    tidy_adjusted <- tidy(model_adjusted, conf.int = TRUE)
+    glance_adjusted <- glance(model_adjusted)
+    
+    # Add model and outcome information
+    tidy_adjusted$Model <- "Adjusted"
+    tidy_adjusted$Outcome <- outcome
+    tidy_adjusted$Hormone <- hormone
+    
+    # Get R-squared from glance
+    tidy_adjusted$R_squared <- glance_adjusted$r.squared
+    
+    # Get AIC from glance
+    tidy_adjusted$AIC <- glance_adjusted$AIC
+    
+    # Reorder columns (now including AIC)
+    tidy_adjusted <- tidy_adjusted[, c(
+      "Model", "Outcome", "Hormone",
+      "term", "estimate", "std.error",
+      "conf.low", "conf.high",
+      "p.value", "R_squared",
+      "AIC"
+    )]
+    
+    colnames(tidy_adjusted) <- c(
+      "Model", "Outcome", "Hormone",
+      "Term", "Coefficient", "Std_Error",
+      "CI_Lower", "CI_Upper",
+      "p_value", "R_squared",
+      "AIC"
+    )
+    
+    # Append to the adjusted results data frame
+    adjusted_results <- rbind(adjusted_results, tidy_adjusted)
+    
+    # Calculate VIFs for the adjusted model
+    vif_values <- vif(model_adjusted)
+    vif_df <- data.frame(
+      Model = "Adjusted",
+      Outcome = outcome,
+      Hormone = hormone,
+      Term = names(vif_values),
+      VIF = vif_values
+    )
+    
+    # Append to the VIF results data frame
+    vif_results <- rbind(vif_results, vif_df)
+  }
+  
+  # Close the PDF device for adjusted models
+  dev.off()
+  
+  # Append to the combined adjusted results data frame
+  all_adjusted_results <- rbind(all_adjusted_results, adjusted_results)
+  
+  # Append to the combined VIF results data frame
+  all_vif_results <- rbind(all_vif_results, vif_results)
+}
+
+# Save the combined adjusted results to a CSV file
+write.csv(
+  all_adjusted_results,
+  file = "Imputed_Models/Multiple_Hormones/2Hormone_Adjusted_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+
+# Save the combined VIF results to a CSV file
+write.csv(
+  all_vif_results,
+  file = "Imputed_Models/Multiple_Hormones/2Hormone_VIF_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+```
+
+## Standardised robust models
+
+```{r}
+
+# Define covariates and hormones to run through
+covariates <- c("age", "prog", "mvpa", "protein", "bmi")
+hormones <- c("E2", "FEI")
+
+# Standardize the specific variables
+data_transformed <- data %>%
+  mutate(across(all_of(hormones), ~ log10(.))) 
+data_standardized <- data %>%
+  mutate(across(all_of(c(allvariables, covariates, hormones)), scale))
+
+# Initialize empty data frames to store combined results
+all_robust_adjusted_results <- data.frame()
+
+# Loop over each hormone
+for (hormone in hormones) {
+  
+  # Initialize empty data frame to store results
+  robust_adjusted_results <- data.frame()
+  
+  # Loop over each outcome variable for adjusted models with robust standard errors
+  for (outcome in functionvariables) {
+    
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(paste(outcome, "~", paste(c(hormone, covariates), collapse = " + ")))
+    
+    # Fit the linear model using standardized data
+    model_adjusted <- lm(formula_adjusted, data = data_standardized)
+    
+    # Calculate robust standard errors
+    robust_se <- vcovHC(model_adjusted, type = "HC1")
+    robust_summary <- coeftest(model_adjusted, vcov = robust_se)
+    
+    # Extract coefficients and p-values from robust summary
+    robust_coefficients <- data.frame(
+      Term = rownames(robust_summary),
+      Coefficient = robust_summary[, "Estimate"],
+      Std_Error = robust_summary[, "Std. Error"],
+      t_value = robust_summary[, "t value"],
+      p_value = robust_summary[, "Pr(>|t|)"]
+    )
+    
+    # Calculate confidence intervals manually
+    alpha <- 0.05  # 95% confidence interval
+    critical_value <- qt(1 - alpha/2, df = model_adjusted$df.residual)
+    robust_coefficients$CI_Lower <- robust_coefficients$Coefficient - critical_value * robust_coefficients$Std_Error
+    robust_coefficients$CI_Upper <- robust_coefficients$Coefficient + critical_value * robust_coefficients$Std_Error
+    
+    # Get R-squared from the original model
+    glance_adjusted <- glance(model_adjusted)
+    
+    # Add model, outcome, and hormone information
+    robust_coefficients$Model <- "Robust Adjusted"
+    robust_coefficients$Outcome <- outcome
+    robust_coefficients$Hormone <- hormone
+    robust_coefficients$R_squared <- glance_adjusted$r.squared
+    
+    # Reorder columns
+    robust_coefficients <- robust_coefficients[, c("Model", "Outcome", "Hormone", "Term", "Coefficient", "Std_Error",
+                                                   "CI_Lower", "CI_Upper", "p_value", "R_squared")]
+    
+    # Append to the robust adjusted results data frame
+    robust_adjusted_results <- rbind(robust_adjusted_results, robust_coefficients)
+    
+  }  # End of outcome loop
+  
+  # Append to the combined robust adjusted results data frame
+  all_robust_adjusted_results <- rbind(all_robust_adjusted_results, robust_adjusted_results)
+  
+}  # End of hormone loop
+
+# Create directory if it doesn't exist
+if (!dir.exists("Robust_standardised_adjusted_models")) {
+  dir.create("Robust_standardised_adjusted_models")
+}
+
+# Save the combined robust adjusted results to a CSV file
+write.csv(all_robust_adjusted_results, file = "Imputed_Models/Multiple_Hormones/2Hormone_Function_Robust_Adjusted_results.csv", row.names = FALSE)
+```
+

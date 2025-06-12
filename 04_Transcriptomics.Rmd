@@ -1,0 +1,1181 @@
+---
+title: "FAMe Transcriptomics"
+output: html_document
+date: "2025-04-02"
+---
+# Load libraries
+
+```{r load library, include=FALSE}
+
+# Core RNA-seq analysis
+library(DESeq2)
+library(limma)
+library(Mfuzz)
+library(DEGreport)
+library(RNAseqQC)
+
+# Annotation and enrichment
+library(biomaRt)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(AnnotationHub)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(DOSE)
+
+# Regulatory motif analysis
+library(TFBSTools)
+library(JASPAR2022)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(GenomicRanges)
+library(Biostrings)
+library(GenomicFeatures)
+
+# Data handling
+library(tibble)
+library(readxl)
+library(reshape2)
+library(tidyverse)  # includes dplyr, ggplot2, tidyr, purrr, readr, etc.
+library(splines)
+
+# Visualization
+library(ggpubr)
+library(ggrepel)
+library(cowplot)
+library(EnhancedVolcano)
+library(pheatmap)
+library(patchwork)
+library(ggbreak)
+library(magick)
+
+# Load custom functions
+source("Functions.R")
+
+set.seed(42)
+```
+
+# Merge data
+
+This code is used to merge the counts data from the randomly selected cohort (n=48, n=8 per decade) and the 10 participants who were previously analysed in Lamon et al. (2024).
+
+```{r}
+# Load randomly selected counts data
+cts_allSexes <- read_rds("Data/cts_allSexes.rds")
+cts1 <- cts_allSexes[1:48] %>% 
+  dplyr::select(-c("FL-92")) #females only with outlier removed
+
+# Load counts data from Lamon et al. (2024)
+cts2 <- read.csv("Data/cts_female_pheno.csv", check.names = FALSE)
+rownames(cts2) <- cts2[[1]]
+cts2 <- cts2[ , -1]
+
+# Merge counts data
+cts1 <- cts1 %>% rownames_to_column(var = "GeneID")# Add gene ID as a column for merging
+cts2 <- cts2 %>% rownames_to_column(var = "GeneID")
+cts_merged <- full_join(cts1, cts2, by = "GeneID") # Full join by gene ID (keeps all rows)
+cts_merged <- cts_merged %>% column_to_rownames(var = "GeneID") # Move gene ID back to rownames
+cts_merged[is.na(cts_merged)] <- 0 # Converts NA to 0
+
+cts <- cts_merged
+cts <- saveRDS(cts, "Data/counts_data.rds")
+
+# Pheno data
+
+col <- read_excel("Data/pheno_data.xlsx") %>% 
+  filter(! ColName %in% c("FL-92")) # outlier removed
+pheno_data <- saveRDS(col, "Data/pheno_data.rds")
+
+# check rownames of sample data equal column names of count matrix
+pheno_data <- read_rds("Data/pheno_data.rds") 
+rownames(pheno_data) <- paste0(pheno_data$ColName)
+all(rownames(pheno_data) == colnames(cts))
+
+head(cts)
+head(pheno_data)
+
+```
+
+# Load data
+
+```{r}
+
+cts <- read_rds("counts_data.rds")
+pheno_data <- read_rds("pheno_data.rds") 
+
+# Set factors and reference level
+pheno_data$Agecat <- as.factor(pheno_data$Agecat)
+pheno_data$Agecat <- relevel(pheno_data$Agecat, ref = "18-29")
+pheno_data$ColName <- as.factor(pheno_data$ColName)
+pheno_data$Menopause <- as.factor(pheno_data$Menopause)
+pheno_data$Batch <- as.factor(pheno_data$Batch)
+pheno_data$E2 <- as.numeric(pheno_data$E2)
+pheno_data$FEI <- as.numeric(pheno_data$FEI)
+pheno_data$TT <- as.numeric(pheno_data$TT)
+pheno_data$FAI <- as.numeric(pheno_data$FAI)
+pheno_data$Prog <- as.numeric(pheno_data$Prog)
+pheno_data$TE2 <- as.numeric(pheno_data$TE2)
+
+# check rownames of sample data equal column names of count matrix
+pheno_data <- read_rds("pheno_data.rds") 
+rownames(pheno_data) <- paste0(pheno_data$ColName)
+all(rownames(pheno_data) == colnames(cts))
+
+head(cts)
+head(pheno_data)
+
+```
+
+# Check data
+
+This code creates a DEseq object, filters for low counts, and performs normalisation.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = pheno_data, design = ~ 1)
+
+x <- dim(dds)
+
+keep <- rowMeans(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- estimateSizeFactors(dds)
+
+# Normalisation
+vsd <- vst(dds, blind=FALSE)
+
+cat("---- Table Dimensions ---- ", "\n",
+    "Before filtering for lowcounts: ", x, "\n",
+    "After filtering for lowcounts:  ", dim(dds))
+```
+
+## 1. Outliers
+
+```{r}
+
+# detect outlier samples - hierarchical clustering
+htree <- hclust(dist(t(assay(vsd))), method = "average")
+groups <- cutree(htree, k=6) # cut tree into clusters
+
+plot(htree, labels(groups))
+# draw dendogram with red borders around the clusters
+rect.hclust(htree, k=6, border="red")
+
+```
+
+## 2. PCA plots
+
+This code is used to test for batch effects, before and after correction.
+
+```{r }
+beforePCA <- plotPCA(vsd, intgroup = "Batch")
+beforePCA
+
+assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$Batch)
+afterPCA <- plotPCA(vsd, intgroup = "Batch")
+afterPCA
+
+# First, create your individual plots with labels
+plot_A <- beforePCA + 
+  ggtitle("Before batch correction") +
+  theme(
+  plot.title = element_text(size = 16, face = "bold")
+)
+
+plot_B <- afterPCA + 
+  ggtitle("After batch correction") + theme(
+  plot.title = element_text(size = 16, face = "bold")
+)
+
+# Method 1: Save individual plots with cowplot labels
+plot_A_labeled <- plot_grid(
+  plot_A, 
+  labels = "A", 
+  label_size = 20,
+  ncol = 1
+)
+
+plot_B_labeled <- plot_grid(
+  plot_B, 
+  labels = "B", 
+  label_size = 20,
+  ncol = 1
+)
+
+# Save individual plots
+ggsave("Transcriptomics/PCA/Before_correction_PCA.png", 
+       plot = plot_A_labeled, 
+       width = 8, height = 7, dpi = 300)
+
+ggsave("Transcriptomics/PCA/After_correction_PCA.png", 
+       plot = plot_B_labeled, 
+       width = 8, height = 7, dpi = 300)
+
+```
+
+
+# Age analysis (Figure 5)
+
+## 1. Volcano
+
+This analysis runs DESeq with age as a continuous variable and produces a volcano plot to see genes that are significantly associated with age. Log fold change here represents the B coefficient of the relationship.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = pheno_data, design = ~ Batch + Age)
+
+dds_results_list <- list()
+
+x <- dim(dds)
+
+keep <- rowMeans(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- estimateSizeFactors(dds)
+
+# Normalisation
+vsd <- vst(dds, blind=FALSE)
+
+cat("---- Table Dimensions ---- ", "\n",
+    "Before filtering for lowcounts: ", x, "\n",
+    "After filtering for lowcounts:  ", dim(dds))
+
+dds <- DESeq(dds)
+
+# Pre-map gene names once
+ensembl_ids <- rownames(cts)
+gene_names <- mapIds(
+  org.Hs.eg.db,
+  keys = ensembl_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Extract results
+res <- results(dds, name = "Age")
+res_df <- as.data.frame(res)
+res_df$ensembl_id <- rownames(res_df)
+  
+res_df$gene_name <- mapIds(
+    org.Hs.eg.db,
+    keys = res_df$ensembl_id,
+    column = "SYMBOL",
+    keytype = "ENSEMBL",
+    multiVals = "first"
+  )
+  
+  # Save all results
+  write.csv(res_df, paste0("Transcriptomics/Continuous/Age_associations.csv"), row.names = FALSE)
+  
+  # Save list of all genes
+  
+  all_genes <- (res_df$gene_name)
+  saveRDS(all_genes, "Transcriptomics/All_genes.rds")
+  
+  all_gene_ensembl <-(res_df$ensembl_id)
+  
+  # Save significant only
+  age_sig_df <- subset(res_df, padj < 0.05)
+  saveRDS(age_sig_df$gene_name, "Transcriptomics/Age_associated_genes.rds")
+  
+  age_genes_ensembl <- age_sig_df$ensembl_id
+  
+  # Save in list
+  dds_results_list[["Age"]] <- res_df
+  
+   # Count significant genes based on p-value cutoff
+  sig_genes <- sum(res_df$padj < 0.05, na.rm = TRUE)
+  
+  # Get maximum absolute fold-change for xlim setting
+  max_abs_fc <- max(abs(res_df$log2FoldChange), na.rm = TRUE)
+  
+# EnhancedVolcano plot (focused on p-value significance only)
+ 
+ num_up   <- sum(res_df$padj < 0.05 & res_df$log2FoldChange > 0, na.rm = TRUE)
+ num_down <- sum(res_df$padj < 0.05 & res_df$log2FoldChange < 0, na.rm = TRUE)
+
+ keyvals <- ifelse(
+  res_df$padj < 0.05 & res_df$log2FoldChange > 0, "red",
+  ifelse(res_df$padj < 0.05 & res_df$log2FoldChange < 0, "blue", "darkgrey")
+)
+
+# Force replace any NA colors with default
+keyvals[is.na(keyvals)] <- "darkgrey"
+
+# Assign labels only where color is valid (lengths must match!)
+keyval_labels <- ifelse(
+  keyvals == "red", paste0("Up (n=", num_up,")"),
+  ifelse(keyvals == "blue", paste0("Down (n=", num_down, ")"), 
+         ifelse(keyvals == "darkgrey", "NS", NA))
+)
+
+# Assign names explicitly — this ensures no `NA` legend keys are created
+names(keyvals) <- keyval_labels
+
+# Final check to remove any names that are NA
+keyvals <- keyvals[!is.na(names(keyvals))]
+
+volc_plot <- EnhancedVolcano(res_df, 
+  x = "log2FoldChange", 
+  y = "padj", 
+  lab = NA, 
+  pCutoff = 0.05,  
+  FCcutoff = 0,
+  gridlines.major = FALSE, 
+  gridlines.minor = FALSE,
+  caption = NULL,
+  title = "Genes associated with age",
+  subtitle = NULL,
+  xlab = bquote("Log"[2]~"fold change per year"),
+  xlim = c(-max_abs_fc, max_abs_fc),  
+  colCustom = keyvals,
+  legendPosition = "top"
+) + theme(
+  axis.text.x = element_text(color = "black"),
+  axis.text.y = element_text(color = "black")
+)
+
+volc_plot
+
+```
+
+## 2. Gene Set Enrichment 
+
+```{r}
+df <- res_df
+gene_list <- df$log2FoldChange
+names(gene_list) <- rownames(df)
+gene_list<-na.omit(gene_list)
+gene_list = sort(gene_list, decreasing = TRUE)
+options(enrichment_force_universe = TRUE)
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "ENSEMBL", 
+             minGSSize = 5, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "BH")
+require(DOSE)
+gsedotplot <- dotplot(gse, showCategory=5, split=".sign") + facet_grid(.~.sign)
+gsedotplot
+```
+
+## 3. Merge figures
+
+```{r}
+
+# Create your individual plots with labels
+plot_A <- volc_plot + 
+  ggtitle("Genes associated with age") +
+  theme(
+  plot.title = element_text(size = 16, face = "bold")
+)
+
+plot_B <- gsedotplot + 
+  ggtitle("Gene set enrichment") + theme(
+  plot.title = element_text(size = 16, face = "bold")
+)
+
+# Save individual plots with cowplot labels
+plot_A_labeled <- plot_grid(
+  plot_A, 
+  labels = "A", 
+  label_size = 20,
+  ncol = 1
+)
+
+plot_B_labeled <- plot_grid(
+  plot_B, 
+  labels = "B", 
+  label_size = 20,
+  ncol = 1
+)
+
+# Save individual plots
+ggsave("Transcriptomics/Continuous/Volcano.png", 
+       plot = plot_A_labeled, 
+       width = 8, height = 7, dpi = 300)
+
+ggsave("Transcriptomics/Continuous/Dotplot.png", 
+       plot = plot_B_labeled, 
+       width = 8, height = 7, dpi = 300)
+
+# Read the saved images
+img_A <- image_read("Transcriptomics/Continuous/Volcano.png")
+img_B <- image_read("Transcriptomics/Continuous/Dotplot.png")
+
+# Combine side by side
+combined_image <- image_append(c(img_A, img_B), stack = FALSE)
+
+# Save the combined image
+image_write(combined_image, "Transcriptomics/Continuous/Combined_Figure.png")
+
+```
+
+
+# Cluster analysis (Figure 6)
+
+## 1. LRT
+
+Analyze all levels of a factor at once using [likelihood ratio test (LRT)](https://hbctraining.github.io/DGE_workshop/lessons/08_DGE_LRT.html) which is used to identify any genes that show change in expression across the different levels of age (linear and non-linear).
+
+```{r fig.height=10, fig.width=13}
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = pheno_data, design = ~ Batch + Agecat)
+
+dds_results_list <- list()
+
+x <- dim(dds)
+
+keep <- rowMeans(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- estimateSizeFactors(dds)
+
+# Normalisation
+vsd <- vst(dds, blind=FALSE)
+
+cat("---- Table Dimensions ---- ", "\n",
+    "Before filtering for lowcounts: ", x, "\n",
+    "After filtering for lowcounts:  ", dim(dds))
+
+coldataLRT <- as.data.frame(dds@colData)
+
+dds_lrt <- DESeq(dds, test="LRT", reduced=~1)
+res_lrt <- results(dds_lrt)
+
+sig_res_LRT <- res_lrt %>%
+               data.frame() %>%
+               tibble::rownames_to_column(var="gene") %>%
+               as_tibble() %>%
+               filter(padj < 0.05)
+ 
+# Get significant gene lists
+sigLRT_genes <- sig_res_LRT %>%
+  arrange(padj) %>%
+  pull(gene)
+
+saveRDS(sigLRT_genes, "Transcriptomics/Clusters/all_sig_genes.rds")
+```
+
+## 2. Find clusters
+
+```{r fig.height=10, fig.width=13}
+
+sigLRT_genes <- readRDS("Transcriptomics/Clusters/all_sig_genes.rds")
+
+n <- length(sigLRT_genes)
+
+rld <- rlog(dds, blind=TRUE)
+rld_mat <- assay(rld) %>%
+  as.matrix()
+
+all(rownames(coldataLRT) == colnames(rld_mat))
+
+# Subset results for faster cluster finding
+clustering_sig_genes <- sig_res_LRT %>%
+                 arrange(padj) %>%
+                  head(n=n)
+
+# Obtain rlog values for those significant genes
+cluster_rlog <- rld_mat[clustering_sig_genes$gene, ]
+
+# this function runs for a long time depending on n
+clusters <- degPatterns(cluster_rlog, metadata = coldataLRT, time = "Agecat", col=NULL)
+saveRDS(clusters, "Transcriptomics/Clusters/Clusters.rds")
+
+#clusters <- readRDS("Ageing/Clusters/Clusters.rds")
+
+level_order <- c("18-29", "30-39", "40-49", "50-59", "60-69", "70-80")
+
+# Plot all clusters  
+timeSeries <- degPlotCluster(clusters$normalized, time = "Agecat", lines = F) +
+  scale_x_discrete(limits = level_order) +
+  scale_color_manual(values = "#2e008b") +
+ # facet_wrap(~factor(clusters$plot$data$title,
+ #                   levels = as.list(unique(clusters$plot$data$title))),
+ #          ncol = 2) +
+  theme_linedraw(base_size = 16) +
+    labs(title = "Gene clusters exhibiting particular patterns across age",
+         subtitle = "",
+         x = "Age group (years)",
+         y = "Z-score of gene abundance") +
+    theme(plot.title=element_text(hjust=0.5, size = 18),
+          plot.subtitle=element_text(hjust=0.5),
+          axis.title.x     = element_text(size = 18),
+          axis.title.y     = element_text(size = 18),
+          panel.grid.major = element_line(colour = "lightgrey"),
+          panel.grid.minor = element_line(colour = "lightgrey"),
+          legend.position = "none"
+    )
+
+timeSeries
+
+ggsave("Transcriptomics/Clusters/All_clusters.png", 
+       plot = timeSeries, 
+       width = 24, height = 15, dpi = 300)
+
+```
+
+## 3. Clusters of interest
+
+```{r}
+# Define and filter your clusters
+selected_clusters <- c(3, 4, 6, 7, 13, 15, 16, 20)
+
+clusters_sel           <- clusters
+clusters_sel$normalized <- clusters$normalized %>%
+  filter(cluster %in% selected_clusters)
+clusters_sel$df         <- clusters$df %>%
+  filter(cluster %in% selected_clusters)
+
+# Now compute gene counts
+cluster_counts <- dplyr::count(clusters_sel$df, cluster) %>%
+  arrange(cluster)
+
+# Build a named vector of labels, e.g. "Cluster 3 (123 genes)"
+cluster_labels <- setNames(
+  paste0("Cluster ", cluster_counts$cluster, "\n(", cluster_counts$n, " genes)"),
+  cluster_counts$cluster
+)
+
+# Plot with facet_wrap + custom labeller
+select <- degPlotCluster(
+       clusters_sel$normalized,
+       time  = "Agecat",
+       lines = FALSE,
+       smooth = FALSE,
+     ) +
+  scale_color_manual(values = "#2e008b") +
+     facet_wrap(
+       ~ cluster,
+       nrow    = 4,
+       ncol    = 2,
+       scales  = "free_y",
+       labeller = labeller(cluster = cluster_labels)
+     ) +
+     labs(
+       title = "Gene clusters exhibiting particular patterns across age",
+       x = "Age group (years)"
+     ) +
+     theme_linedraw(base_size = 14) +
+     theme(
+       plot.title      = element_text(hjust = 0.5, size = 20),
+       axis.title.x     = element_text(size = 18),
+       strip.text      = element_text(size = 16),
+       axis.text.y      = element_text(size =  16, color = "black"),
+       axis.text.x      = element_text(size =  16, color = "black"),
+       legend.position = "none"
+     ) 
+
+ggsave("Transcriptomics/Clusters/Selected_Clusters.png",
+       plot = select, width = 8, height = 12, dpi = 300)
+
+select
+
+```
+
+## 4. Pathway enrichment
+
+```{r}
+selected_clusters <- c(3, 4, 6, 7, 13, 15, 16, 20)
+
+reactome <- msigdbr(
+  species     = "Homo sapiens",
+  category    = "C2",
+  subcategory = "CP:REACTOME"
+) %>%
+  distinct(gs_name, ensembl_gene) %>%
+  mutate(
+    gs_name = gsub("REACTOME_", "", gs_name),
+    gs_name = gsub("_", " ", gs_name)
+  )
+
+universe <- rownames(df)
+barplots <- list()
+
+for (i in selected_clusters) {
+  genes_in_cluster <- clusters$df %>%
+    filter(cluster == i) %>%
+    pull(genes)
+  
+  C1_Enrich <- enricher(
+    gene          = genes_in_cluster,
+    universe      = universe,
+    TERM2GENE     = reactome,
+    pvalueCutoff  = 0.05,
+    pAdjustMethod = "BH",
+    minGSSize     = 5,
+    maxGSSize     = 2000,
+    qvalueCutoff  = 0.2
+  )
+  
+  if (!is.null(C1_Enrich) && nrow(C1_Enrich@result) > 0) {
+    dp <- barplot(
+      C1_Enrich,
+      showCategory = 5          # only top 5 terms
+    ) +
+      labs(
+        title    = paste0("Cluster ", i),
+        subtitle = NULL,
+        x = "Gene ratio"
+      ) +
+      theme_minimal(base_size = 20) +  # smaller base font
+      theme(
+        plot.title       = element_text(hjust = 0.5, size = 16, color = "black", face = "bold"),
+        plot.subtitle    = element_text(hjust = 0.5, size =  15, color = "black"),
+        axis.text.y      = element_text(size =  10, color = "black"),
+        axis.text.x      = element_text(size =  12, color = "black"),
+        axis.title.x     = element_text(size = 14),   
+        axis.title.y     = element_blank(),
+        legend.title     = element_text(size =  20, color = "black"),
+        legend.text      = element_text(size =  20, color = "black"),
+        plot.margin      = margin(4, 4, 4, 4, "mm")
+      )
+    
+    barplots[[paste0("C", i)]] <- dp
+  }
+}
+
+shared_legend <- get_legend(
+  barplot(C1_Enrich, showCategory = 5) +
+    theme_minimal() +
+    theme(
+      legend.direction   = "vertical",
+      legend.title       = element_text(size = 16),
+      legend.text        = element_text(size = 14),
+      legend.key.height  = unit(4, "mm")
+    )
+)
+
+# Strip legends from all the plots
+plots_no_legend <- lapply(barplots, function(p) 
+  p + theme(legend.position = "none")
+)
+
+# Build the 4×2 grid of plots
+plots_grid <- plot_grid(
+  plotlist = plots_no_legend,
+  ncol     = 2,
+  align    = "hv",
+  labels     = LETTERS[2:9],     # adds A, B, C ... H
+  label_size = 20,
+  label_fontface = "bold"
+)
+
+# Combine the grid and shared legend
+select_ora <- plot_grid(
+  plots_grid,        # left (8 panels)
+  shared_legend,     # right (single legend)
+  ncol       = 2,
+  rel_widths = c(0.9, 0.1)   # adjust as needed
+)
+
+# Save as a compact A4‐style PNG
+ggsave(
+  "Transcriptomics/Clusters/Selected_Clusters_Enrichment.png",
+  select_ora,
+  width  = 13,    
+  height = 15,   
+  dpi    = 300,
+  units  = "in",
+  bg = "white"
+)
+```
+
+## 5. Merge figures
+
+```{r}
+# First, create your individual plots with labels
+plot_A <- select + 
+  ggtitle("Gene cluster patterns") +
+  theme(
+  plot.title = element_text(size = 20, face = "bold")
+)
+
+plot_B <- select_ora
+
+# Method 1: Save individual plots with cowplot labels
+plot_A_labeled <- plot_grid(
+  plot_A, 
+  labels = "A", 
+  label_size = 20,
+  ncol = 1
+)
+
+# Save individual plots
+ggsave("Transcriptomics/Clusters/Selected_Clusters.png", 
+       plot = plot_A_labeled, 
+       width = 10, height = 15, dpi = 300)
+
+ggsave("Transcriptomics/Clusters/Selected_Clusters_Enrichment.png", 
+       plot = plot_B, 
+       width = 13, height = 15, dpi = 300, bg = "white")
+
+# Read the saved images
+img_A <- image_read("Transcriptomics/Clusters/Selected_Clusters.png")
+img_B <- image_read("Transcriptomics/Clusters/Selected_Clusters_Enrichment.png")
+
+# Combine side by side
+combined_image <- image_append(c(img_A, img_B), stack = FALSE)
+
+# Save the combined image
+image_write(combined_image, "Transcriptomics/Clusters/Combined_Figure.png")
+```
+
+# Hormone analysis (Figure 7)
+
+## 1. DEseq
+
+Results are exported into two csv files - all expressed genes and only significant genes. 
+
+```{r}
+
+# Specify the columns to scale
+vars_to_scale <- c("E2", "FEI", "TT", "FAI", "Prog")
+
+# Scale and convert to data frame
+scaled_data <- as.data.frame(scale(pheno_data[vars_to_scale], center = TRUE, scale = TRUE))
+
+# Rename columns to add "_z" suffix
+names(scaled_data) <- paste0(vars_to_scale, "_z")
+
+# Combine scaled columns with original data
+pheno_scaled <- cbind(pheno_data, scaled_data)
+
+# Keep only samples with non-missing FEI_z
+keep_samples <- !is.na(pheno_scaled$FEI_z)
+
+# Subset phenotype and count data
+pheno_subset <- pheno_scaled[keep_samples, ]
+cts_subset <- cts[, keep_samples]
+
+keep_genes <- rowMeans(cts_subset) >= 10
+cts_filtered <- cts_subset[keep_genes, ]
+
+cat("Genes retained after low-count filtering:", sum(keep_genes), 
+    "out of", nrow(cts_subset), "\n")
+
+# Create base DESeq object once
+dds_base <- DESeqDataSetFromMatrix(
+  countData = cts_filtered, 
+  colData = pheno_subset, 
+  design = ~ 1  # Temporary design
+)
+
+# Estimate size factors once
+dds_base <- estimateSizeFactors(dds_base)
+
+# Get normalized counts for quality control
+vsd <- vst(dds_base, blind = FALSE)
+
+# Pre-map gene names once
+ensembl_ids <- rownames(cts_filtered)
+gene_names <- mapIds(
+  org.Hs.eg.db,
+  keys = ensembl_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+predictors <- c("E2_z", "FEI_z", "TT_z", "FAI_z", "Prog_z")
+
+var_labels <- c(
+  E2_z = "E2",
+  FEI_z = "Free E2 Index",
+  TT_z = "Testosterone",
+  FAI_z = "Free Androgen Index",
+  Prog_z = "Progesterone"
+)
+
+dds_results_list <- list()
+
+for (var in predictors) {
+  cat("Processing", var, "...\n")
+
+  design_formula <- as.formula(paste("~ Batch + ", var))
+  design(dds_base) <- design_formula
+
+dds <- DESeq(dds_base, quiet = TRUE)
+
+# Extract results
+res <- results(dds, name = var)
+res_df <- as.data.frame(res)
+res_df$ensembl_id <- rownames(res_df)
+  
+res_df$gene_name <- mapIds(
+    org.Hs.eg.db,
+    keys = res_df$ensembl_id,
+    column = "SYMBOL",
+    keytype = "ENSEMBL",
+    multiVals = "first"
+  )
+  
+  # Save all results
+  sanitized_name <- gsub("[^a-zA-Z0-9_]", "_", var)
+  write.csv(res_df, paste0("Transcriptomics/Hormones/Results/DE_results_all_", sanitized_name, ".csv"), row.names = FALSE)
+  
+  # Save significant only
+  sig_df <- subset(res_df, padj < 0.05)
+  write.csv(sig_df, paste0("Transcriptomics/Hormones/Results/DE_results_sig_", sanitized_name, ".csv"), row.names = FALSE)
+  
+  # Save in list
+  dds_results_list[[var]] <- res_df
+  
+}
+
+# Save RDS with results
+
+saveRDS(dds_results_list, "Transcriptomics/Hormones/Hormone_associations_results.rds")
+
+```
+
+## 2. Volcanoes
+
+```{r}
+
+dds_results_list <- readRDS("Transcriptomics/Hormones/Results/Hormone_associations_results.rds")
+
+predictors <- c("E2_z", "FEI_z", "TT_z", "FAI_z", "Prog_z")
+
+var_labels <- c(
+  E2_z  = "E2",
+  FEI_z = "Free E2 Index",
+  TT_z  = "Testosterone",
+  FAI_z = "Free Androgen Index",
+  Prog_z = "Progesterone"
+)
+
+
+plot_list <- list()
+
+for (var in predictors) {
+  
+  res_df <- dds_results_list[[var]]
+  
+   # Count significant genes based on p-value cutoff
+  sig_genes <- sum(res_df$padj < 0.05, na.rm = TRUE)
+  
+  # Get maximum absolute fold-change for xlim setting
+  max_abs_fc <- max(abs(res_df$log2FoldChange), na.rm = TRUE)
+  
+  # Get maximum –log10(padj)
+  max_y <- max(-log10(res_df$padj), na.rm=TRUE)
+  break_low  <- 6 # Everything above this is the gap
+  break_high <- max_y - 1 # This is where to end the break
+  
+  # Get gene labels for significant genes
+  lab_vec <- ifelse(
+  !is.na(res_df$padj) & res_df$padj < 0.05,
+  ifelse(res_df$gene_name != "" & !is.na(res_df$gene_name), res_df$gene_name,   res_df$ensembl_id),
+  ""  # Leave blank if not significant
+)
+  
+# EnhancedVolcano plot (focused on p-value significance only)
+  
+num_up   <- sum(res_df$padj < 0.05 & res_df$log2FoldChange > 0, na.rm = TRUE)
+num_down <- sum(res_df$padj < 0.05 & res_df$log2FoldChange < 0, na.rm = TRUE)
+  
+  keyvals <- ifelse(
+  res_df$padj < 0.05 & res_df$log2FoldChange > 0, "red",
+  ifelse(res_df$padj < 0.05 & res_df$log2FoldChange < 0, "blue", "darkgrey")
+)
+
+# Force replace any NA colors with default
+keyvals[is.na(keyvals)] <- "darkgrey"
+
+# Assign labels only where color is valid (lengths must match!)
+keyval_labels <- ifelse(
+  keyvals == "red", paste0("Up (n=", num_up,")"),
+  ifelse(keyvals == "blue", paste0("Down (n=", num_down, ")"), 
+         ifelse(keyvals == "darkgrey", "NS", NA))
+)
+
+# Assign names explicitly — this ensures no `NA` legend keys are created
+names(keyvals) <- keyval_labels
+
+# Final check to remove any names that are NA
+keyvals <- keyvals[!is.na(names(keyvals))]
+  
+  p <- EnhancedVolcano(res_df, 
+                               x = "log2FoldChange", 
+                               y = "padj", 
+                               lab = lab_vec, 
+                               labSize = 3.5,
+                               max.overlaps = Inf,            # allow unlimited labels
+                               drawConnectors = TRUE,         # optional: draws lines back to points
+                               widthConnectors = 0.5,         # thinner connector lines
+                               pCutoff = 0.05,  
+                               FCcutoff = 0,
+                               ylim = c(0, max_y * 1), # change to c(0, 15) for even y axes
+                               gridlines.major = FALSE, 
+                               gridlines.minor = FALSE,
+                               title = paste(var_labels[[var]]), 
+                               subtitle = NULL,
+                               caption = NULL,
+                               xlim = c(-max_abs_fc, max_abs_fc),# Centers at 0 
+                               colCustom = keyvals,
+                               legendPosition = "top"
+  ) +
+    theme(
+    axis.text     = element_text(color = "black"),  # tick labels
+    axis.title    = element_text(color = "black"),  # axis titles
+    plot.title    = element_text(color = "black"),  # main title
+    plot.subtitle = element_text(color = "black")   # subtitle
+  )
+  
+  ggsave(
+    filename = file.path("Transcriptomics/Hormones/Figures", paste0("Volcano_", var_labels[[var]], ".png")),
+    plot     = p,
+    width    = 6, height = 5, dpi = 300
+  )
+  
+  plot_list[[var]] <- p
+  
+}
+
+combined <- wrap_plots(plot_list, ncol = 3) +
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+  
+  ggsave(
+    filename = file.path("Transcriptomics/Hormones/Figures/All_Volcano_plots.png"),
+    plot     = combined,
+    width    = 15, height = 12, dpi = 300
+  )
+  
+```
+
+# TF enrichment (Figure 8)
+
+## 1. BED files
+
+UniBind requires a BED file for genes of interest (age associated genes) and background genes (all genes).
+
+```{r}
+
+# Build HG38 enrichment windows (–2 kb to +200 bp around TSS)
+ah   <- AnnotationHub()
+txdb <- ah[["AH117076"]]        # hg38 TxDb (RefSeq)
+gr   <- genes(txdb)             # GRanges of all hg38 genes
+
+# Map Entrez → SYMBOL
+entrez_ids <- mcols(gr)$gene_id
+symbols    <- mapIds(
+  org.Hs.eg.db,
+  keys      = as.character(entrez_ids),
+  column    = "SYMBOL",
+  keytype   = "ENTREZID",
+  multiVals = "first"
+)
+mcols(gr)$symbol <- symbols
+
+# Compute promoter windows: –2000 to +200 bp from TSS
+promoter_windows <- as.data.frame(gr) %>%
+  transmute(
+    chr    = as.character(seqnames),
+    strand = as.character(strand),
+    tss    = ifelse(strand == "+", start, end),
+    win_start = ifelse(strand == "+", pmax(0, tss - 2000), pmax(0, tss - 200)),
+    win_end   = ifelse(strand == "+", tss + 200,               tss + 2000),
+    name  = symbol
+  ) %>%
+  transmute(chr, start = win_start, end = win_end, name)
+
+# Keep only standard chromosomes (chr1–22, chrX, chrY) and valid symbols
+standard_chrs   <- paste0("chr", c(1:22, "X", "Y"))
+promoter_windows <- promoter_windows %>%
+  filter(chr %in% standard_chrs, !is.na(name), name != "")
+
+# Define make_bed() function for writing 4-column bed files
+
+make_bed <- function(hits, filename) {
+  # 'hits' is a character vector of gene symbols
+  bed <- promoter_windows %>%
+    filter(name %in% hits) %>%
+    select(chr, start, end, name)
+  if (nrow(bed) == 0) {
+    message("⚠️  No rows to write for ", filename, " (skipped)")
+    return(NULL)
+  }
+  write.table(
+    bed,
+    file      = filename,
+    sep       = "\t",
+    quote     = FALSE,
+    col.names = FALSE,
+    row.names = FALSE,
+    eol       = "\n"
+  )
+}
+
+
+# All background genes (symbols from RDS)
+bg_df   <- readRDS("Ageing/All_genes.rds")      # each element is a gene symbol
+bg_hits <- unique(na.omit(bg_df))
+make_bed(bg_hits, "TF Analysis/All_genes.bed")
+
+# DE genes for each hormone (from dds_results_list)
+hormones <- c("E2_z", "FEI_z", "TT_z", "FAI_z", "Prog_z")
+for (hormone in hormones) {
+  res_df     <- dds_results_list[[hormone]]
+  sig_genes  <- rownames(res_df)[!is.na(res_df$padj) & res_df$padj < 0.05]
+  sig_symbols <- mapIds(
+    org.Hs.eg.db,
+    keys      = sig_genes,
+    column    = "SYMBOL",
+    keytype   = "ENSEMBL",
+    multiVals = "first"
+  )
+  bed_path <- paste0("TF Analysis/DEsig_", hormone, "_genes.bed")
+  make_bed(unique(na.omit(sig_symbols)), bed_path)
+}
+
+# DEseq to determine pre- and post-menopausal DEGs
+
+# Subset pheno_data to Premenopausal & Postmenopausal only, re‐level
+pheno_meno <- pheno_data %>%
+  filter(Menopause %in% c("Premenopausal", "Postmenopausal")) %>%
+  mutate(Menopause = factor(Menopause, levels = c("Postmenopausal", "Premenopausal")))
+rownames(pheno_meno) <- pheno_meno$ColName
+
+# Subset counts to those samples
+cts_meno <- cts[, rownames(pheno_meno)]
+
+# Build DESeqDataSet (adjust for Batch & Menopause)
+dds_meno <- DESeqDataSetFromMatrix(
+  countData = cts_meno,
+  colData   = pheno_meno,
+  design    = ~ Batch + Menopause
+)
+
+# Prefilter: keep only genes with sum(counts) ≥ 10
+keep_meno <- rowSums(counts(dds_meno)) >= 10
+dds_meno <- dds_meno[keep_meno, ]
+
+# Run DESeq normalization & testing
+dds_meno <- DESeq(dds_meno)
+
+# Extract results for Premenopausal vs Postmenopausal
+res_meno      <- results(dds_meno, contrast = c("Menopause", "Premenopausal", "Postmenopausal"))
+
+# Significant DE genes
+res_sig_meno <- res_meno[!is.na(res_meno$padj) & res_meno$padj < 0.05, ]
+
+# Genes up in Premenopausal
+up_pre <- res_sig_meno[res_sig_meno$log2FoldChange > 0, ]
+up_pre_syms <- mapIds(
+  org.Hs.eg.db,
+  keys      = rownames(up_pre),
+  column    = "SYMBOL",
+  keytype   = "ENSEMBL",
+  multiVals = "first"
+) %>% unique() %>% na.omit()
+
+# Genes up in Postmenopausal
+up_post <- res_sig_meno[res_sig_meno$log2FoldChange < 0, ]
+up_post_syms <- mapIds(
+  org.Hs.eg.db,
+  keys      = rownames(up_post),
+  column    = "SYMBOL",
+  keytype   = "ENSEMBL",
+  multiVals = "first"
+) %>% unique() %>% na.omit()
+
+# Save BEDs
+make_bed(up_pre_syms,  "TF Analysis/DEG_Premenopausal_promoters.bed")
+make_bed(up_post_syms, "TF Analysis/DEG_Postmenopausal_promoters.bed")
+
+```
+
+## 2. UniBind results
+
+```{r}
+file_paths <- list(
+  post  = "Transcriptomics/TF_Enrichment/allEnrichments_post.tsv",
+  pre   = "Transcriptomics/TF_Enrichment/allEnrichments_pre.tsv"
+)
+
+# Function to return list of unique significant antibodies
+get_unique_antibodies <- function(path) {
+  read_tsv(path, show_col_types = FALSE) %>%
+    filter(pValueLog > 2, !is.na(antibody), antibody != "") %>%
+    distinct(antibody) %>%
+    pull(antibody)
+}
+
+# Get TF lists
+tf_lists <- lapply(file_paths, get_unique_antibodies)
+
+# Get counts from the same lists
+tf_counts <- sapply(tf_lists, length)
+
+# Create summary table
+summary_df <- data.frame(
+  Group = names(tf_counts),
+  Unique_Significant_TFs = tf_counts
+)
+
+# Show summary
+print(summary_df)
+
+# View actual TFs per group
+tf_lists$post 
+tf_lists$pre
+```
+
+## 3. Merge figures
+
+Bee swarm plots from the UniBind analysis are included in the results provided the tool. 
+
+```{r}
+
+# Create combined label + title banner
+make_labelled_title <- function(label, title_text, width, height = 60) {
+  img <- image_blank(width = width, height = height, color = "white")
+  img <- image_annotate(
+    img,
+    text = paste0(label),  # e.g., A.
+    gravity = "west",
+    location = "+20+10",
+    size = 20,
+    weight = 700
+  )
+  img <- image_annotate(
+    img,
+    text = title_text,
+    gravity = "west",
+    location = "+70+10",  # shift to the right of the label
+    size = 16,
+    weight = 700
+  )
+  return(img)
+}
+
+# Read images from your folder
+img_A <- image_read("Transcriptomics/TF_Enrichment/Pre_allEnrichments_swarm.png.png")
+img_B <- image_read("Transcriptomics/TF_Enrichment//Post_allEnrichments_swarm.png.png")
+
+# Standardize width
+standard_width <- min(image_info(img_A)$width,
+                      image_info(img_B)$width)
+
+# Compose one plot panel
+compose_panel <- function(img, label, title_text) {
+  img <- image_resize(img, paste0(standard_width, "x"))
+  title_bar <- make_labelled_title(label, title_text, width = image_info(img)$width)
+  image_append(c(title_bar, img), stack = TRUE)
+}
+
+# Build each panel
+panel_A <- compose_panel(img_A, "A", "Enriched in premenopausal females")
+panel_B <- compose_panel(img_B, "B", "Enriched in postmenopausal females")
+
+# Combine panels into 2x2 layout
+final_figure <- image_append(c(panel_A, panel_B), stack = FALSE)
+
+# Save result
+image_write(final_figure, "Transcriptomics/TF_Enrichment/Swarm_Combined.png")
+
+```

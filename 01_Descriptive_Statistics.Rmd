@@ -1,0 +1,129 @@
+---
+title: "Descriptive Statistics"
+author: "Annabel Critchlow"
+date: "2024-11-14"
+output:
+  html_document:
+    theme: readable
+    toc: TRUE
+---
+
+
+# Load libraries
+
+```{r}
+
+library(tidyverse)
+library(readxl)
+
+```
+
+# Load files
+
+```{r}
+data <- read_excel("FAMe_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+
+immuno_data <- data %>%
+  filter(ihc == "yes")
+
+rna_data <- data %>%
+  filter(!is.na(rnaseq) & rnaseq != "", id != "92")
+    
+```
+
+
+# Define variables
+
+Variables have been allocated into numerical or categorical.
+
+```{r}
+numvars <- c("weight", "height", "bmi", "bodyfat", "TBFM", "TBLM", "ALM", "ALMh", "bmc", "thighmuscle", "intrafat", "subfat", "permuscle", "bonedensity", "onerep", "onerepllm", "onerepcsa", "E2", "FEI", "prog", "TT", "FAI", "TEratio", "protein", "mvpa")
+
+catvars <- c("meno", "hc", "hrt")
+
+immunonumvars <- c("weight", "height", "bmi", "bodyfat", "TBFM", "TBLM", "ALM", "ALMh", "bmc", "thighmuscle", "intrafat", "subfat", "permuscle", "bonedensity", "Ipernumber", "Iperarea", "Imeanarea", "IIApernumber", "IIAperarea", "IIAmeanarea", "Hybridpernumber", "Hybridperarea", "Hybridmeanarea", "Tmeanarea", "onerep", "onerepllm", "onerepcsa", "E2", "FEI", "prog", "TT", "FAI", "TEratio", "protein", "mvpa")
+
+```
+
+
+# Participant characteristics (Table 2)
+
+This code calculates the mean and standard deviation for all numeric variables, and the frequency of categorical variables, both in the whole cohort and across each age group. Replace 'data' with the data subset (immuno_data or rna_data) to calculate values for the cohort subsets. Replace numvars with immunonumvars when analysing IHC data subset.
+
+```{r}
+
+# Step 1: Numeric summary by agecat
+by_agecat_num <- data %>%
+  group_by(agecat) %>%
+  summarise(across(all_of(numvars),
+                   list(mean = ~round(mean(.x, na.rm = TRUE), 1),
+                        sd   = ~round(sd(.x, na.rm = TRUE), 1)),
+                   .names = "{.col}_{.fn}")) %>%
+  pivot_longer(-agecat, names_to = c("Variable", "Stat"), names_sep = "_") %>%
+  pivot_wider(names_from = Stat, values_from = value) %>%
+  mutate(Value = paste0(mean, " (", sd, ")")) %>%
+  select(agecat, Variable, Value)
+
+# Step 2: Overall numeric summary
+overall_num <- data %>%
+  summarise(across(all_of(numvars),
+                   list(mean = ~round(mean(.x, na.rm = TRUE), 1),
+                        sd   = ~round(sd(.x, na.rm = TRUE), 1)),
+                   .names = "{.col}_{.fn}")) %>%
+  pivot_longer(everything(), names_to = c("Variable", "Stat"), names_sep = "_") %>%
+  pivot_wider(names_from = Stat, values_from = value) %>%
+  mutate(Value = paste0(mean, " (", sd, ")"),
+         agecat = "Overall") %>%
+  select(agecat, Variable, Value)
+
+# Step 3: Combine numeric summary
+summary_num <- bind_rows(by_agecat_num, overall_num) %>%
+  pivot_wider(names_from = agecat, values_from = Value) %>%
+  mutate(Stat = "mean (sd)") %>%
+  select(Variable, Stat, everything())
+
+# Step 4: Count total per group (agecat) for percentage calculation
+agecat_totals <- data %>%
+  group_by(agecat) %>%
+  summarise(N = n(), .groups = "drop")
+
+# Step 5: Categorical summary by agecat as "n / total (percent%)"
+by_agecat_cat <- rna_data %>%
+  select(agecat, all_of(catvars)) %>%
+  pivot_longer(-agecat, names_to = "Variable", values_to = "Level") %>%
+  group_by(agecat, Variable, Level) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  left_join(agecat_totals, by = "agecat") %>%
+  mutate(pct = round(100 * n / N, 1),
+         Value = paste0(n, " / ", N, " (", pct, "%)")) %>%
+  unite(Variable, Variable, Level, sep = ": ") %>%
+  select(agecat, Variable, Value) %>%
+  pivot_wider(names_from = agecat, values_from = Value)
+
+# Step 6: Overall counts for categorical variables
+overall_cat <- data %>%
+  select(all_of(catvars)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Level") %>%
+  group_by(Variable, Level) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(N = nrow(data),
+         pct = round(100 * n / N, 0),
+         Overall = paste0(n, " / ", N, " (", pct, "%)")) %>%
+  unite(Variable, Variable, Level, sep = ": ") %>%
+  select(Variable, Overall)
+
+# Step 7: Combine categorical summaries
+summary_cat <- full_join(by_agecat_cat, overall_cat, by = "Variable") %>%
+  mutate(Stat = "count / total (%)") %>%
+  select(Variable, Stat, everything())
+
+# Step 8: Final combined summary table
+final_table <- bind_rows(summary_num, summary_cat)
+
+# Step 9: Export
+print(final_table, n = Inf)
+write_csv(final_table, "Descriptives/Participant_characteristics.csv")
+
+```

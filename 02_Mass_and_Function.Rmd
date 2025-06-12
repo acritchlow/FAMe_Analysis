@@ -1,0 +1,890 @@
+---
+title: "Muscle Mass and Function Analysis"
+author: "Annabel Critchlow"
+date: "2025-02-11"
+output: html_document
+---
+
+# Load libraries
+
+```{r}
+library(tidyverse)     
+library(readxl)        
+library(broom)         
+library(knitr)         
+library(kableExtra)    
+library(patchwork)     
+library(sandwich)      
+library(lmtest)        
+library(car)           
+library(corrplot)      
+library(tibble)  
+```
+
+# Hormonal effects (Table 3)
+
+This code tests the relationships between reproductive factors (menstrual cycle phase, hormonal contraception, hormonal replacement therapy) and the outcome variables using a linear model. 
+
+## 1. Load unimputed data
+
+```{r}
+unimputed_data <- read_excel("FAMe_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+```
+
+## 2a. Menstrual cycle phase
+
+neurophase refers to the participant's menstrual cycle phase during their muscle function visit. 
+
+```{r}
+# Create subset of data with only premenopausal participants
+mcdata <- unimputed_data %>%
+  filter(meno == "pre", neurophase != "unknown", hc != "OCP", hc != "Implant") %>%
+  drop_na(neurophase)
+
+# Select which variables to analyse and place them in a list
+vars <- mcdata %>%
+  dplyr::select("onerep", "onerepllm", "onerepcsa")
+
+vars <- names(vars)
+
+models = lapply(vars, function(x) {
+  lm(substitute(i ~ neurophase, list(i = as.name(x))), data = mcdata)
+})
+
+y=lapply(models, summary)
+names(y) <- vars # To add names of the model instead of list number
+df=purrr::map_df(y, broom::tidy, .id = 'vars')%>%
+  filter(term == "neurophase" | term != "(Intercept)")
+
+knitr::kable(df) %>%
+  kable_styling() %>%
+  row_spec(which(df$term == "neurophase"  & df$p.value < 0.05), bold = T)
+
+write.csv(df, "Hormonal_effects/Menstrual_cycle_effects.csv")
+
+```
+
+## 2b. Hormonal contraception
+
+```{r}
+# Create subset of data with only premenopausal participants
+predata <- unimputed_data %>%
+  filter(meno == "pre") %>%
+  drop_na(hc) %>%
+  mutate(hc = factor(hc, levels = c("none", "ocp", "iud", "implant")))
+
+# Select which variables to analyse and place them in a list
+vars <- predata %>%
+  dplyr::select("bodyfat", "TBFM", "TBLM", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa")
+
+vars <- names(vars)
+
+models = lapply(vars, function(x) {
+  lm(substitute(i ~ hc, list(i = as.name(x))), data = predata)
+})
+
+y=lapply(models, summary)
+names(y) <- vars # To add names of the model instead of list number
+df=purrr::map_df(y, broom::tidy, .id = 'vars')%>%
+  filter(term == "hc" | term != "(Intercept)")
+
+knitr::kable(df) %>%
+  kable_styling() %>%
+  row_spec(which(df$term == "hc"  & df$p.value < 0.05), bold = T)
+
+write.csv(df, "Hormonal_effects/Contraceptive_effects.csv")
+
+```
+
+## 2c. Hormonal replacement therapy
+
+```{r}
+# Create subset of data with only perimenopausal and postmenopausal participants
+peripostdata <- unimputed_data %>%
+  filter(meno != "pre") %>%
+  drop_na(hrt) %>%
+  mutate(hrt = factor(hrt, levels = c("no", "yes")))
+
+# Select which variables to analyse and place them in a list
+vars <- peripostdata %>%
+  dplyr::select("bodyfat", "TBFM", "TBLM", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa")
+
+vars <- names(vars)
+
+models = lapply(vars, function(x) {
+  lm(substitute(i ~ hrt, list(i = as.name(x))), data = peripostdata)
+})
+
+y=lapply(models, summary)
+names(y) <- vars
+df=purrr::map_df(y, broom::tidy, .id = 'vars')%>%
+  filter(term == "hrt" | term != "(Intercept)")
+
+knitr::kable(df) %>%
+  kable_styling() %>%
+  row_spec(which(df$term == "hrt"  & df$p.value < 0.05), bold = T)
+
+write.csv(df, "Hormonal_effects/HRT_effects.csv")
+```
+
+# Age associations (Figure 2)
+
+## 1. Load imputed data
+
+```{r}
+data <- read_excel("FAMe_Imputed_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+```
+
+## 2. Define variables
+
+```{r}
+allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa")
+
+var_labels <-c(
+  bodyfat = expression("Body fat (%)"),
+  ALM = expression("ALM (kg)"),
+  ALMh = expression(bold("ALM index (kg.m"^-2*")")),  
+  thighmuscle = expression(bold("Thigh muscle CSA (cm"^2*")")),
+  intrafat = expression(bold("Intramuscular fat (cm"^2*")")),  
+  subfat = expression(bold("Subcutaneous fat (cm"^2*")")), 
+  permuscle = expression("Thigh muscle (%)"),
+  onerep = expression("e1RM (kg)"),
+  onerepllm = expression(bold("Specific e1RM (kg.kg"^-2*")")),
+  onerepcsa = expression(bold("Specific e1RM (kg.cm"^-2*")"))
+)
+
+```
+
+## 3. Testing assumptions
+
+Models have been adjusted for protein intake (protein) and physical activity (mvpa)
+
+1. Compare spread of residuals and normality in linear vs. polynomial models
+2. Use AIC test to compare score between linear and polynomial (lower score = better)
+
+### 3a. Residuals
+
+```{r}
+# Linear Residual plots
+
+# Initialize a list to store the combined plots for each variable
+linear_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a linear model
+  lm_model <- lm(as.formula(paste(outcome, "~ age + protein + mvpa")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  linear_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Age_associations/All/Linear_Model_Assumptions.pdf", width = 8, height = 11)
+
+for (plot in linear_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+# Polynomial residual plots
+
+# Initialize a list to store the combined plots for each variable
+polynomial_residual_plots <- list()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Fit a linear model
+  lm_model <- lm(as.formula(paste(outcome, "~ poly(age, 2) + protein + mvpa")), data = data)
+  
+  # Extract residuals and fitted values
+  residuals <- resid(lm_model)
+  fitted <- fitted(lm_model)
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(fitted = fitted, residuals = residuals)
+  
+  # Residuals vs Fitted plot
+  p1 <- ggplot(plot_data, aes(x = fitted, y = residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    ggtitle(paste("Residuals vs Fitted for", outcome)) +
+    theme_minimal()
+  
+  # Q-Q Plot of residuals
+  p2 <- ggplot(plot_data, aes(sample = residuals)) +
+    stat_qq(alpha = 0.6) +
+    stat_qq_line() +
+    ggtitle(paste("Q-Q Plot of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Histogram of residuals
+  p3 <- ggplot(plot_data, aes(x = residuals)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+    ggtitle(paste("Histogram of Residuals for", outcome)) +
+    theme_minimal()
+  
+  # Combine the three plots vertically
+  combined_plot <- p1 / p2 / p3
+  
+  # Add the combined plot to the list
+  polynomial_residual_plots[[outcome]] <- combined_plot
+}
+
+# Save all combined plots to a PDF, one page per variable
+pdf("Age_associations/All/Polynomial_Model_Assumptions.pdf", width = 8, height = 11)
+
+for (plot in polynomial_residual_plots) {
+  print(plot)
+}
+
+dev.off()
+
+
+```
+
+### 3b. AIC
+
+```{r}
+# Testing the fit of models with AIC
+aic_results <- data.frame(
+  Variable = character(),
+  Linear_AIC = numeric(),
+  Polynomial_AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each variable
+for (outcome in allvariables) {
+  # Construct formulas
+  linear_formula <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  polynomial_formula <- as.formula(paste(outcome, "~ poly(age, 2) + mvpa + protein"))
+  
+  # Fit linear model
+  lm_linear <- lm(linear_formula, data = data)
+  
+  # Fit polynomial (quadratic) model
+  lm_poly <- lm(polynomial_formula, data = data)
+  
+  # Extract AICs
+  aic_linear <- AIC(lm_linear)
+  aic_poly <- AIC(lm_poly)
+  
+  # Append results to the data frame
+  aic_results <- rbind(
+    aic_results,
+    data.frame(Variable = outcome, Linear_AIC = aic_linear, Polynomial_AIC = aic_poly)
+  )
+}
+
+# Write the results to a CSV file
+write.csv(aic_results, "Age_associations/All/Adjusted_Linear_Poly_Model_fit.csv", row.names = FALSE)
+
+```
+
+## 4. Results
+
+This code runs linear regression between age and outcome variables, while adjusting for mvpa and protein.
+
+```{r}
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the linear model (outcome vs. age + mvpa)
+  formula_model <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  
+  # Fit the linear model using your data
+  model <- lm(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract model coefficients and statistics
+  model_coefficients <- data.frame(
+    Term        = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error   = coef(summary(model))[ , "Std. Error"],
+    t_value     = coef(summary(model))[ , "t value"],
+    p_value     = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Label columns
+  model_coefficients$Model   = "Adjusted"
+  model_coefficients$Outcome = outcome
+  model_coefficients$R_squared = R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c("Model", "Outcome", "Term", "Coefficient",
+                                              "Std_Error", "CI_Lower", "CI_Upper",
+                                              "p_value", "R_squared")]
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End outcome loop
+
+# Save the combined model results to a CSV file
+write.csv(all_model_results, file = "Age_associations/All/Linear_results.csv", row.names = FALSE)
+
+```
+
+## 5. Plots
+
+This code produces plots representing the association between age and each outcome variable. The slope of the line represents the coefficient after adjusting for protein and mvpa. 
+
+```{r}
+
+# Initialize a list to store plots
+plot_list <- list()
+
+# Create a data frame to collect all model results
+all_model_results <- data.frame()
+
+# Define the list of "nice" intervals
+nice_intervals <- c(0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+
+# Loop over each outcome variable
+for (outcome in allvariables) {
+  
+  # Create the formula for the linear model (outcome vs. age + mvpa)
+  formula_model <- as.formula(paste(outcome, "~ age + mvpa + protein"))
+  
+  # Fit the linear model using your data
+  model <- lm(formula_model, data = data)
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract the coefficient and p-value for 'age'
+  age_coef <- coef(model)["age"]
+  age_p_value <- coef(summary(model))["age", "Pr(>|t|)"]
+  
+  # Format the labels for display
+  beta_formatted <- sprintf("%.2f", age_coef)
+  p_value_formatted <- sprintf("%.3f", age_p_value)
+  if (p_value_formatted == "0.000") {
+    p_value_formatted <- "<0.001"
+  }
+  
+  # Define x and y variables
+  x_var <- data[["age"]]
+  y_var <- data[[outcome]]
+  
+  # Get the outcome variable label (replace with actual labels if available)
+  y_label <- var_labels[[outcome]]  
+  x_label <- "Age (years)"
+  
+  # Prepare the data for plotting (points)
+  plot_data <- data.frame(
+    x_var           = x_var,
+    y_var           = y_var
+  )
+  
+  y_min <- 0
+  y_max <- max(y_var, na.rm = TRUE)
+  
+  raw_interval <- y_max / 8
+  interval     <- nice_intervals[which(nice_intervals >= raw_interval)[1]]
+  
+  y_max_extended <- ceiling(y_max / interval) * interval
+  
+  y_breaks <- seq(y_min, y_max_extended, by = interval)
+  y_limits <- c(y_min, y_max_extended)
+  
+  # Generate a sequence of age values across its observed range
+  age_seq <- seq(
+    from = min(x_var, na.rm = TRUE),
+    to   = max(x_var, na.rm = TRUE),
+    length.out = 100
+  )
+  
+  # Hold covariates at the mean (or median/other typical value)
+  mean_mvpa <- mean(data$mvpa, na.rm = TRUE)
+  mean_protein <- mean(data$protein, na.rm = TRUE)
+  
+  pred_data <- expand.grid(
+    age            = age_seq,
+    mvpa           = mean_mvpa,
+    protein        = mean_protein
+  )
+  
+  preds <- predict(model, newdata = pred_data, se.fit = TRUE)
+  
+  # Add fit + 95% CI to pred_data
+  pred_data$fit <- preds$fit
+  pred_data$se  <- preds$se.fit
+  pred_data$upr <- pred_data$fit + 1.96 * pred_data$se
+  pred_data$lwr <- pred_data$fit - 1.96 * pred_data$se
+  
+  p <- ggplot(plot_data, aes(x = x_var, y = y_var)) +
+    # Raw points
+    geom_point(aes(), color = "darkblue", size = 1) +
+    
+    # The adjusted model line in RED (holding mvpa at mean)
+    geom_line(
+      data = pred_data,
+      aes(x = age, y = fit),
+      color = "red",         # fixed red line
+      size = 1.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Confidence ribbon in RED, partially transparent
+    geom_ribbon(
+      data = pred_data,
+      aes(x = age, ymin = lwr, ymax = upr),
+      alpha = 0.2,
+      inherit.aes = FALSE
+    ) +
+    
+    # Annotation for Beta and p-value
+   annotate(
+  "text",
+  x = Inf,
+  y = if (outcome %in% c("permuscle")) {
+    y_min  # position at bottom of plot for permuscle
+  } else {
+    Inf   # position at top for other outcomes
+  },
+  label = bquote("B" == .(beta_formatted) ~ "," ~ italic(p) == .(p_value_formatted)),
+  hjust = 1.05,
+  vjust = if (outcome %in% c("permuscle")) -0.5 else 1.5,
+  size = 3,
+  color = "black",
+  fontface = "bold"
+) +
+    
+    # Labels and scales
+    labs(x = x_label, y = y_label)+
+    theme(axis.title.y = element_text(face = "bold")) +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 5), expand = c(0, 0.5)) +
+    scale_y_continuous(breaks = y_breaks, limits = y_limits, expand = c(0, 0)) +
+    
+    # Theme
+    theme_minimal(base_size = 16) +
+    theme(
+      text              = element_text(face = "bold", family = "sans"),
+      axis.title        = element_text(size = 9, color = "black"),
+      axis.line         = element_line(color = "black"),
+      axis.text         = element_text(size = 8, color = "black"),
+      axis.ticks        = element_line(color = "black", size = 0.8),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white", color = "white")
+    )
+  
+  # Save this plot in the list
+  plot_list[[length(plot_list) + 1]] <- p
+  
+  model_coefficients <- data.frame(
+    Term        = rownames(coef(summary(model))),
+    Coefficient = coef(model),
+    Std_Error   = coef(summary(model))[ , "Std. Error"],
+    t_value     = coef(summary(model))[ , "t value"],
+    p_value     = coef(summary(model))[ , "Pr(>|t|)"]
+  )
+  
+  # Confidence intervals
+  conf_intervals <- confint(model)
+  model_coefficients$CI_Lower <- conf_intervals[ , 1]
+  model_coefficients$CI_Upper <- conf_intervals[ , 2]
+  
+  # R-squared
+  R_squared <- model_summary$r.squared
+  
+  # Label columns
+  model_coefficients$Model   = "Adjusted"
+  model_coefficients$Outcome = outcome
+  model_coefficients$R_squared = R_squared
+  
+  # Reorder columns
+  model_coefficients <- model_coefficients[ , c("Model", "Outcome", "Term", "Coefficient",
+                                                "Std_Error", "CI_Lower", "CI_Upper",
+                                                "p_value", "R_squared")]
+  # Append to the results data frame
+  all_model_results <- rbind(all_model_results, model_coefficients)
+  
+}  # End outcome loop
+
+combined_plot <- wrap_plots(plot_list, ncol = 4) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 12))
+
+# Save the combined plot to a PDF file
+tiff_filename <- "Age_associations/All/Adjusted_Linear_Plots.tiff"
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+
+```
+
+# Hormone associations (Figure 4)
+
+## 1. Load imputed data
+
+```{r}
+data <- read_excel("FAMe_Imputed_Data.xlsx",
+                   na = c("","NA", "?", "#VALUE!"),
+                 trim_ws = TRUE)
+```
+
+## 2. Define variables
+
+Separate lists have been created for body composition and muscle function variables as they have been adjusted for by different variables.
+
+```{r}
+
+# Define outcome variables for hormone association analysis
+bodycompvariables <- c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle")
+
+functionvariables <-c("onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+
+allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+
+hormones <-c(hormonevariables <- c("E2", "FEI", "TT", "FAI", "prog", "TEratio"))
+
+# Mapping variable names to full names
+bodycomp_var_labels <- c(
+  bodyfat = "Body fat (%)",
+  ALM = "Appendicular lean mass (kg)",
+  ALMh = expression("ALM index (kg/m"^2*")"),  
+  thighmuscle = expression("Thigh muscle CSA (cm"^2*")"),
+  intrafat = expression("Intramuscular fat (cm"^2*")"),  
+  subfat = expression("Subcutaneous fat (cm"^2*")"),  
+  permuscle = "Relative thigh muscle (%)"
+)
+
+function_var_labels <-c(
+  onerep = "e1RM (kg)",
+  onerepllm = "Normalised e1-RM (kg/kg LLM)",
+  onerepcsa = expression("Normalised e1RM (kg/cm"^2*")")
+)
+
+all_var_labels <- c(
+  bodyfat = "Body fat (%)",
+  ALM = "Appendicular lean mass (kg)",
+  ALMh = expression("ALM index (kg/m"^2*")"),  
+  thighmuscle = expression("Thigh muscle CSA (cm"^2*")"),
+  intrafat = expression("Intramuscular fat (cm"^2*")"),  
+  subfat = expression("Subcutaneous fat (cm"^2*")"), 
+  permuscle = "Relative thigh muscle (%)",
+  onerep = "e1RM (kg)",
+  onerepllm = "Normalised e1RM (kg/kg)",
+  onerepcsa = expression("Normalised e1RM (kg/cm"^2*")")
+)
+```
+
+## 3. Testing assumptions
+
+This code tests the assumptions for using linear regression, including heteroscedasticity, normality, and co-linearity of covariates (using variance inflation factors (VIF)).
+
+Body composition and muscle mass variables were adjusted for age, mvpa, and protein.
+Muscle function variables were adjusted for age, mvpa, protein, and bmi.
+
+```{r}
+# Define covariates
+covariates <- c("age", "mvpa", "protein")
+
+# Initialize empty data frames to store combined results
+all_adjusted_results <- data.frame()
+all_vif_results <- data.frame()
+
+for (hormone in hormones) {
+  # Initialize empty data frames to store results
+  adjusted_results <- data.frame()
+  vif_results <- data.frame()
+
+  # Create a PDF file to save the adjusted model plots
+  pdf(file = paste0("Hormone_associations/All/Bodycomp_Residual_Plots_", hormone, ".pdf"))
+
+  # Loop over each outcome variable for adjusted models
+  for (outcome in bodycompvariables) {
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(
+      paste(outcome, "~", paste(c(hormone, covariates), collapse = " + "))
+    )
+
+    # Fit the linear model
+    model_adjusted <- lm(formula_adjusted, data = data)
+
+    # Extract residuals and fitted values
+    residuals <- resid(model_adjusted)
+    fitted_values <- fitted(model_adjusted)
+
+    # Set up the plotting area to have three plots per page
+    par(mfrow = c(3, 1))
+
+    # 1. Residuals vs Fitted Plot
+    plot(fitted_values, residuals,
+         main = paste("Adjusted Model Residuals vs Fitted for", outcome, "and", hormone),
+         xlab = "Fitted Values",
+         ylab = "Residuals")
+    abline(h = 0, col = "red")
+
+    # 2. Q-Q Plot of Residuals
+    qqnorm(residuals,
+           main = paste("Adjusted Model Normal Q-Q Plot for", outcome, "and", hormone),
+           ylab = "Quantiles of Residuals")
+    qqline(residuals, col = "red")
+
+    # 3. Histogram of Residuals
+    hist(residuals,
+         main = paste("Adjusted Model Histogram of Residuals for", outcome, "and", hormone),
+         xlab = "Residuals",
+         breaks = 20)
+
+    # Extract model summary statistics using broom
+    tidy_adjusted <- tidy(model_adjusted, conf.int = TRUE)
+    glance_adjusted <- glance(model_adjusted)
+
+    # Add model and outcome information
+    tidy_adjusted$Model <- "Adjusted"
+    tidy_adjusted$Outcome <- outcome
+    tidy_adjusted$Hormone <- hormone
+
+    # Get R-squared from glance
+    tidy_adjusted$R_squared <- glance_adjusted$r.squared
+
+    # Get AIC from glance
+    tidy_adjusted$AIC <- glance_adjusted$AIC
+
+    # Reorder columns (now including AIC)
+    tidy_adjusted <- tidy_adjusted[, c(
+      "Model", "Outcome", "Hormone",
+      "term", "estimate", "std.error",
+      "conf.low", "conf.high",
+      "p.value", "R_squared",
+      "AIC"
+    )]
+
+    colnames(tidy_adjusted) <- c(
+      "Model", "Outcome", "Hormone",
+      "Term", "Coefficient", "Std_Error",
+      "CI_Lower", "CI_Upper",
+      "p_value", "R_squared",
+      "AIC"
+    )
+
+    # Append to the adjusted results data frame
+    adjusted_results <- rbind(adjusted_results, tidy_adjusted)
+
+    # Calculate VIFs for the adjusted model
+    vif_values <- vif(model_adjusted)
+    vif_df <- data.frame(
+      Model = "Adjusted",
+      Outcome = outcome,
+      Hormone = hormone,
+      Term = names(vif_values),
+      VIF = vif_values
+    )
+
+    # Append to the VIF results data frame
+    vif_results <- rbind(vif_results, vif_df)
+  }
+
+  # Close the PDF device for adjusted models
+  dev.off()
+
+  # Append to the combined adjusted results data frame
+  all_adjusted_results <- rbind(all_adjusted_results, adjusted_results)
+
+  # Append to the combined VIF results data frame
+  all_vif_results <- rbind(all_vif_results, vif_results)
+}
+
+# Save the combined adjusted results to a CSV file
+write.csv(
+  all_adjusted_results,
+  file = "Hormone_associations/All/Function_Adjusted_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+
+# Save the combined VIF results to a CSV file
+write.csv(
+  all_vif_results,
+  file = "Hormone_associations/All/Function_VIF_results_age_mvpa_protein.csv",
+  row.names = FALSE
+)
+
+```
+
+## 4. Results
+
+This code uses standardised robust models to test the associations between hormones and the outcome variables. 
+
+Body composition and muscle mass variables were adjusted for age, mvpa, and protein.
+Muscle function variables were adjusted for age, mvpa, protein, and bmi.
+
+```{r}
+covariates <- c("age","mvpa", "protein")
+
+# Standardise the specific variables
+data_standardised <- data %>%
+  mutate(across(all_of(c(allvariables, covariates, hormones)), scale))
+
+# Initialize empty data frames to store combined results
+all_robust_adjusted_results <- data.frame()
+
+# Loop over each hormone
+for (hormone in hormones) {
+  
+  # Initialize empty data frame to store results
+  robust_adjusted_results <- data.frame()
+  
+  # Loop over each outcome variable for adjusted models with robust standard errors
+  for (outcome in bodycompvariables) {
+    
+    # Create the formula for the adjusted linear model
+    formula_adjusted <- as.formula(paste(outcome, "~", paste(c(hormone, covariates), collapse = " + ")))
+    
+    # Fit the linear model using standardized data
+    model_adjusted <- lm(formula_adjusted, data = data_standardised)
+    
+    # Calculate robust standard errors
+    robust_se <- vcovHC(model_adjusted, type = "HC1")
+    robust_summary <- coeftest(model_adjusted, vcov = robust_se)
+    
+    # Extract coefficients and p-values from robust summary
+    robust_coefficients <- data.frame(
+      Term = rownames(robust_summary),
+      Coefficient = robust_summary[, "Estimate"],
+      Std_Error = robust_summary[, "Std. Error"],
+      t_value = robust_summary[, "t value"],
+      p_value = robust_summary[, "Pr(>|t|)"]
+    )
+    
+    # Calculate confidence intervals manually
+    alpha <- 0.05  # 95% confidence interval
+    critical_value <- qt(1 - alpha/2, df = model_adjusted$df.residual)
+    robust_coefficients$CI_Lower <- robust_coefficients$Coefficient - critical_value * robust_coefficients$Std_Error
+    robust_coefficients$CI_Upper <- robust_coefficients$Coefficient + critical_value * robust_coefficients$Std_Error
+    
+    # Get R-squared from the original model
+    glance_adjusted <- glance(model_adjusted)
+    
+    # Add model, outcome, and hormone information
+    robust_coefficients$Model <- "Robust Adjusted"
+    robust_coefficients$Outcome <- outcome
+    robust_coefficients$Hormone <- hormone
+    robust_coefficients$R_squared <- glance_adjusted$r.squared
+    
+    # Reorder columns
+    robust_coefficients <- robust_coefficients[, c("Model", "Outcome", "Hormone", "Term", "Coefficient", "Std_Error",
+                                                   "CI_Lower", "CI_Upper", "p_value", "R_squared")]
+    
+    # Append to the robust adjusted results data frame
+    robust_adjusted_results <- rbind(robust_adjusted_results, robust_coefficients)
+    
+  }  # End of outcome loop
+  
+  # Append to the combined robust adjusted results data frame
+  all_robust_adjusted_results <- rbind(all_robust_adjusted_results, robust_adjusted_results)
+  
+}  # End of hormone loop
+
+# Save the combined robust adjusted results to a CSV file
+write.csv(all_robust_adjusted_results, file = "Hormone_associations/All/Bodycomp_Robust_Adjusted_results.csv", row.names = FALSE)
+```
+
+## 5. Plot
+
+For this code to produce a plot, results of the linear regression should be presented in an excel file. Each row represents a variable with the variable name in column A. The beta-coefficient and p-value of the first independent variable (e.g. E2) should be presented in columns B and C respectively. The beta-coefficients and p-values of the remaining hormones should follow in the same pattern. 
+
+```{r}
+# Make sure to read your data properly
+final_df <- read_xlsx("Regression_matrix_data.xlsx")
+print(final_df)
+
+# Convert variable names to rownames (these will be the labels on the plot)
+corrPlot <- column_to_rownames(final_df, var="Variable")
+
+# Extract correlation and p-value matrices (column headings)
+corr <- as.matrix(corrPlot[, c("Beta_E2", "Beta_FEI", "Beta_prog", "Beta_TT", "Beta_FAI", "Beta_TE2")])
+p <- as.matrix(corrPlot[, c("p_E2", "p_FEI", "p_prog", "p_TT", "p_FAI", "p_TE2")])
+
+# Rename columns 
+colnames(corr) <- c("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio")
+colnames(p) <- c("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio")
+
+tiff("Hormone_associations/Regression_matrix.tiff", width = 10, height = 15, units = "in", res = 200)
+
+my_colors <- colorRampPalette(c("#313695", "#74add1", "#f7f7f7", "#f46d43", "#a50026"))(100)
+
+c1 <- corrplot(corr,
+              insig = 'label_sig',
+             order = "original",
+             p.mat = p,
+             sig.level = 0.05,
+             method = "color",
+             type = "full",
+             tl.cex = 1.8,
+             tl.col = "white",
+             tl.srt = 45,
+             col = my_colors,  # Use custom color palette
+             cl.pos = 'r',
+             addgrid.col = "gray",
+             cl.cex = 1.5,
+             cl.ratio = 0.5,
+             mar = c(6, 6, 8, 0),
+             zlim = c(-1, 1))  # Force scale to be between -0.6 and 0.6
+
+# Left-align the hormone titles using adj=0
+text(1:6, 25.8,
+     expression("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio"),
+     cex = 1.5, font = 2,
+     srt = 60, adj = 0)  # Added adj=0 for left alignment
+
+positions <- seq(25, 1, length.out = 25)
+mtext(side = 2, line = -25, at = positions,
+      text = rownames(corr),
+      cex = 1.3, font = 1, adj = 1, las = 2)
+dev.off()
+```
+

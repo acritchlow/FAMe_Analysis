@@ -15,8 +15,7 @@ data <- read_excel("FAMe_Data.xlsx",
 # Select the relevant columns
 dat_sub <- data %>%
   dplyr::select("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", 
-                "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va", "protein", "mvpa", "bmi", "age", "id", "E2", "FEI", "TT", "FAI", "prog", "TEratio", "Ipernumber",  "IIApernumber", "Hybridpernumber", "Iperarea", "IIAperarea", "Hybridperarea", "Imeanarea", "IIAmeanarea", "Hybridmeanarea", "Tmeanarea")
-
+                "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "protein", "mvpa", "bmi", "age", "id", "meno", "biopsyphase", "E2", "FEI", "TT", "FAI", "prog", "TEratio", "Ipernumber",  "IIApernumber", "Hybridpernumber", "Iperarea", "IIAperarea", "Hybridperarea", "Imeanarea", "IIAmeanarea", "Hybridmeanarea", "Tmeanarea", "pax7perfibre", "pax7perarea", "bodipy", "fibrosis")
 # Overview of missing data in the dataset
 Overview <- skimr::skim(dat_sub)
 

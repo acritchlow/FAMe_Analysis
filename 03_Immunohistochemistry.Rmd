@@ -19,6 +19,8 @@ library(car)
 library(patchwork)
 library(corrplot)
 library(tibble)
+library(magick)
+library(grid)
 
 ```
 
@@ -472,7 +474,7 @@ combined_plot <- wrap_plots(plot_list, ncol = 4) +
   )
 
 tiff_filename <- "Age_associations/IHC/Linear_Plots_IHC.tiff"
-ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 300, device = "tiff")
 
 write.csv(all_model_results,
           file = "Age_associations/IHC/Linear_results_IHC.csv",
@@ -493,7 +495,7 @@ data <- read_excel("FAMe_Imputed_Data.xlsx",
 ## 2. Define variables
 
 ```{r}
-immunovar <-c("Ipernumber",  "IIApernumber", "Hybridpernumber", "Iperarea", "IIAperarea", "Hybridperarea", "Imeanarea", "IIAmeanarea", "Hybridmeanarea", "Tmeanarea")
+immunovar <-c("Ipernumber",  "IIApernumber", "Hybridpernumber", "Iperarea", "IIAperarea", "Hybridperarea", "Imeanarea", "IIAmeanarea", "Hybridmeanarea", "Tmeanarea", "pax7perfibre", "pax7perarea", "bodipy", "fibrosis")
 
 var_labels <-c(
   Ipernumber = "Type I fibre proportion by number (%)",
@@ -506,7 +508,9 @@ var_labels <-c(
   IIAmeanarea = expression(bold("Type IIa fibre CSA (µm"^2*")")),
   Hybridmeanarea = expression(bold("Type I/IIa fibre CSA (µm"^2*")")),
   Tmeanarea = expression(bold("Fibre CSA of all types (µm"^2*")")),
-  bodipy = "Intramuscular adipose tissue (%)",
+  pax7perfibre = "Satellite Cells/Fibre",
+  pax7perarea = expression(bold("Satellite Cells/mm"^2*"")),
+  bodipy = "IMAT (%)",
   fibrosis = "Fibrosis (%)"
 )
 
@@ -726,8 +730,7 @@ write.csv(all_robust_adjusted_results, file = "Hormone_associations/IHC/Robust_A
 For this code to produce a plot, results of the linear regression should be presented in an excel file. Each row represents a variable with the variable name in column A. The beta-coefficient and p-value of the first independent variable (e.g. E2) should be presented in columns B and C respectively. The beta-coefficients and p-values of the remaining hormones should follow in the same pattern. 
 
 ```{r}
-# Make sure to read your data properly
-final_df <- read_xlsx("Regression_matrix_data.xlsx")
+final_df <- read_xlsx("Data/Regression_matrix_data_IHC.xlsx")
 print(final_df)
 
 # Convert variable names to rownames (these will be the labels on the plot)
@@ -741,7 +744,7 @@ p <- as.matrix(corrPlot[, c("p_E2", "p_FEI", "p_prog", "p_TT", "p_FAI", "p_TE2")
 colnames(corr) <- c("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio")
 colnames(p) <- c("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio")
 
-tiff("Hormone_associations/Regression_matrix.tiff", width = 10, height = 15, units = "in", res = 200)
+tiff("Hormone_associations/Regression_matrix_IHC.tiff", width = 10, height = 15, units = "in", res = 200)
 
 my_colors <- colorRampPalette(c("#313695", "#74add1", "#f7f7f7", "#f46d43", "#a50026"))(100)
 
@@ -764,12 +767,17 @@ c1 <- corrplot(corr,
              zlim = c(-1, 1))  # Force scale to be between -0.6 and 0.6
 
 # Left-align the hormone titles using adj=0
-text(1:6, 25.8,
+text(1:6, 14.8,
      expression("E2", "FEI", "Progesterone", "TT", "FAI", "TT/E2 Ratio"),
      cex = 1.5, font = 2,
      srt = 60, adj = 0)  # Added adj=0 for left alignment
 
-positions <- seq(25, 1, length.out = 25)
+text(x = -9, y = 18,
+     labels = "R",
+     cex = 1.5, font = 2,
+     adj = 0)  # Added adj=0 for left alignment
+
+positions <- seq(14, 1, length.out = 14)
 mtext(side = 2, line = -25, at = positions,
       text = rownames(corr),
       cex = 1.3, font = 1, adj = 1, las = 2)

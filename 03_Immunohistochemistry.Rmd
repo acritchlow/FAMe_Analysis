@@ -99,7 +99,7 @@ knitr::kable(df) %>%
 write.csv(df, "Hormonal_effects/HRT_effects_IHC.csv")
 ```
 
-# Age associations (Figure 3)
+# Age associations (Figure 4)
 
 ## 1. Load imputed data
 

@@ -36,8 +36,9 @@ library(GenomicFeatures)
 library(tibble)
 library(readxl)
 library(reshape2)
-library(tidyverse)  # includes dplyr, ggplot2, tidyr, purrr, readr, etc.
+library(tidyverse)
 library(splines)
+library(broom)
 
 # Visualization
 library(ggpubr)
@@ -1179,3 +1180,193 @@ final_figure <- image_append(c(panel_A, panel_B), stack = FALSE)
 image_write(final_figure, "Transcriptomics/TF_Enrichment/Swarm_Combined.png")
 
 ```
+# Cell type deconvolution (Figure 9)
+
+## 1. All cell types
+
+```{r}
+# Read & clean
+decon <- read.csv("Transcriptomics/Deconvolution/Deconvolution.csv") %>%
+  mutate(Agecat = trimws(Agecat))
+
+# Your raw cell-type columns
+cell_types <- c("Endothelial", "Erythrocyte", "Immune","Muscle", "Stromal")
+
+desired_order <- c("Muscle", "Stromal", "Endothelial", "Erythrocyte" , "Immune")
+
+pretty_names <- c(
+  "Muscle" = "Muscle",
+  "Stromal" = "Stromal",
+  "Endothelial" = "Endothelial",
+  "Erythrocyte" = "Erythrocyte",
+  "Immune" = "Immune"
+)
+
+# Compute 18–29 reference means
+ref_means <- decon %>%
+  filter(Agecat == "18-29") %>%
+  summarise(across(all_of(cell_types), mean, na.rm = TRUE))
+
+# Scale each column and replace NAs with 0
+df_scaled <- decon %>%
+  mutate(across(
+    all_of(cell_types),
+    ~ .x / ref_means[[cur_column()]],
+    .names = "{.col}_scaled"
+  )) %>%
+  mutate(across(ends_with("_scaled"), ~ replace_na(.x, 0)))
+
+# Pivot to long form
+scaled_cols <- paste0(cell_types, "_scaled")
+df_long <- df_scaled %>%
+  pivot_longer(
+    cols      = all_of(scaled_cols),
+    names_to  = "cell_type",
+    values_to = "scaled_value"
+  ) %>%
+  mutate(cell_type = str_remove(cell_type, "_scaled"))
+
+# Prepare data (drop Epithelial as it is 0)
+df_plot <- df_long %>% 
+  #filter(cell_type != "Epithelial") %>%
+  mutate(cell_type = factor(cell_type, levels = desired_order))
+
+# Compute ANOVA p-values
+anova_p <- df_plot %>% 
+  group_by(cell_type) %>% 
+  do(tidy(aov(scaled_value ~ Agecat, data = .))) %>% 
+  ungroup() %>% 
+  filter(term == "Agecat") %>% 
+  select(cell_type, p.value) %>% 
+  mutate(
+    # Use pretty names here
+    p.label = sprintf("%s (p=%.3f)", pretty_names[as.character(cell_type)], p.value)
+  )
+
+# Create named vector for labeller
+label_vec <- set_names(anova_p$p.label, as.character(anova_p$cell_type))
+
+# Plot
+p1 <- ggplot(df_plot, aes(x = Agecat, y = scaled_value, fill = Agecat)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray") +
+  geom_violin(trim = FALSE, adjust = 1.5, alpha = 0.5, color = "black") +
+  geom_jitter(width = 0.2, height = 0.02, size = 1.5, alpha = 0.8, color = "black") +
+  facet_wrap(
+    ~cell_type, 
+    scales   = "free_y", 
+    ncol     = 5,
+    labeller = labeller(cell_type = label_vec)
+  ) +
+  labs(
+    x = "Age Category (years)",
+    y = "Fold change from 18-29 year group"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text       = element_text(size = 14, face = "bold", color = "black"),
+    axis.title.x     = element_text(size = 16, color = "black", face = "bold"),
+    axis.title.y     = element_text(size = 12, color = "black", face = "bold"),
+    axis.text.x      = element_text(size = 14, angle = 45, hjust = 1, color = "black"),
+    axis.text.y      = element_text(size = 14, color = "black"),
+    legend.position  = "none"
+  )
+
+# Print & save
+print(p1)
+ggsave("Transcriptomics/Deconvolution/Deconvolution.png", p1,
+       width = 15, height = 10, dpi = 300)
+
+write.csv(df_scaled,"Transcriptomics/Deconvolution/Deconvolution_ratios.csv" )
+
+```
+## 2. Muscle cells
+
+```{r}
+# Read and clean
+decon <- read.csv("Transcriptomics/Deconvolution/All_cells.csv") %>%
+  mutate(Agecat = trimws(Agecat))
+
+# Raw cell types to include
+cell_types <- c("skeletal.muscle.satellite.stem.cell", "slow.muscle.cell", "fast.muscle.cell", "smooth.muscle.cell")
+
+desired_order <- c("slow.muscle.cell", "fast.muscle.cell", "skeletal.muscle.satellite.stem.cell", "smooth.muscle.cell")
+
+pretty_names <- c(
+  "fast.muscle.cell" = "Fast Muscle",
+  "slow.muscle.cell" = "Slow Muscle",
+  "smooth.muscle.cell" = "Smooth Muscle",
+  "skeletal.muscle.satellite.stem.cell" = "Satellite Cells"
+)
+
+# Compute percentage per row
+df_percent <- decon %>%
+  rowwise() %>%
+  mutate(total = sum(c_across(all_of(cell_types)), na.rm = TRUE)) %>%
+  mutate(across(
+    all_of(cell_types),
+    ~ (.x / total) * 100,
+    .names = "{.col}_percent"
+  )) %>%
+  ungroup()
+
+# Pivot to long format
+percent_cols <- paste0(cell_types, "_percent")
+
+df_long <- df_percent %>%
+  pivot_longer(
+    cols = all_of(percent_cols),
+    names_to = "cell_type",
+    values_to = "percent_value"
+  ) %>%
+  mutate(
+    cell_type = str_remove(cell_type, "_percent"),
+    cell_type = factor(cell_type, levels = desired_order)
+  ) %>%
+  select(Agecat, cell_type, percent_value)
+
+# Compute ANOVA p-values
+anova_p <- df_long %>% 
+  group_by(cell_type) %>% 
+  do(tidy(aov(percent_value ~ Agecat, data = .))) %>% 
+  ungroup() %>% 
+  filter(term == "Agecat") %>% 
+  mutate(
+    p.label = sprintf("%s (p=%.3f)", pretty_names[as.character(cell_type)], p.value)
+  )
+
+label_vec <- set_names(anova_p$p.label, anova_p$cell_type)
+
+# Plot
+p2 <- ggplot(df_long, aes(x = Agecat, y = percent_value, fill = Agecat)) +
+  geom_violin(trim = FALSE, adjust = 1.5, alpha = 0.5, color = "black") +
+  geom_jitter(width = 0.2, height = 0.5, size = 1.5, alpha = 0.8, color = "black") +
+  facet_wrap(
+    ~cell_type, 
+    scales   = "free_y", 
+    ncol     = 4,
+    labeller = labeller(cell_type = label_vec)
+  ) +
+  labs(
+    x = "Age Category (years)",
+    y = "% RNA from each muscle cell type"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text       = element_text(size = 14, face = "bold", color = "black"),
+    axis.title.x     = element_text(size = 16, color = "black", face = "bold"),
+    axis.title.y     = element_text(size = 12, color = "black", face = "bold"),
+    axis.text.x      = element_text(size = 14, angle = 45, hjust = 1, color = "black"),
+    axis.text.y      = element_text(size = 14, color = "black"),
+    legend.position  = "none"
+  )
+
+# Save
+ggsave("Transcriptomics/Deconvolution/Muscle_Deconvolution_Percent.png", p2,
+       width = 15, height = 10, dpi = 300)
+p2
+
+# Export numeric data
+write.csv(df_percent, "Transcriptomics/Deconvolution/Deconvolution_muscle_percentages.csv", row.names = FALSE)
+```
+
+

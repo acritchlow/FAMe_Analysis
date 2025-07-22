@@ -19,6 +19,9 @@ library(lmtest)
 library(car)           
 library(corrplot)      
 library(tibble)  
+library(magick)
+library(grid)
+library(cowplot)
 ```
 
 # Hormonal effects (Table 3)
@@ -164,7 +167,7 @@ var_labels <-c(
 Models have been adjusted for protein intake (protein) and physical activity (mvpa)
 
 1. Compare spread of residuals and normality in linear vs. polynomial models
-2. Use AIC test to compare score between linear and polynomial (lower score = better)
+2. Use AIC test to compare score between linear and polynomial
 
 ### 3a. Residuals
 
@@ -561,7 +564,7 @@ combined_plot <- wrap_plots(plot_list, ncol = 4) +
 
 # Save the combined plot to a PDF file
 tiff_filename <- "Age_associations/All/Adjusted_Linear_Plots.tiff"
-ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device = "tiff")
+ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 300, device = "tiff")
 
 ```
 
@@ -570,9 +573,10 @@ ggsave(tiff_filename, combined_plot, width = 12, height = 8, dpi = 600, device =
 ## 1. Load imputed data
 
 ```{r}
-data <- read_excel("FAMe_Imputed_Data.xlsx",
+data <- read_csv("Data/FAMe_Imputed_Data.csv",
                    na = c("","NA", "?", "#VALUE!"),
-                 trim_ws = TRUE)
+                 trim_ws = TRUE) #%>% Filter for postmenopausal females only in function analysis
+  #filter(meno %in% "post")
 ```
 
 ## 2. Define variables
@@ -584,9 +588,9 @@ Separate lists have been created for body composition and muscle function variab
 # Define outcome variables for hormone association analysis
 bodycompvariables <- c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle")
 
-functionvariables <-c("onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+functionvariables <-c("onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio")
 
-allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio", "va")
+allvariables <-c("bodyfat", "ALM", "ALMh", "thighmuscle", "intrafat", "subfat", "permuscle", "onerep", "onerepllm", "onerepcsa", "mvc", "rtd", "pt_100", "pt_10", "pt_ratio")
 
 hormones <-c(hormonevariables <- c("E2", "FEI", "TT", "FAI", "prog", "TEratio"))
 
